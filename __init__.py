@@ -189,6 +189,58 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ATLASMAP_OT_smart_unwrap_uv1(bpy.types.Operator):
+    """Smart unwrap the active mesh into its second UV layer."""
+
+    bl_idname = "atlasmap.smart_unwrap_uv1"
+    bl_label = "Unwrap UV1"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "The active object must be a mesh.")
+            return {"CANCELLED"}
+        if not obj.data.polygons:
+            self.report({"ERROR"}, "The active mesh has no faces to unwrap.")
+            return {"CANCELLED"}
+
+        previous_mode = obj.mode
+        try:
+            if previous_mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+
+            uv_layers = obj.data.uv_layers
+            if len(uv_layers) < 2:
+                uv_layers.new(name="UV1")
+            uv_layers.active_index = 1
+
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            result = bpy.ops.uv.smart_project(
+                angle_limit=context.scene.atlasmap_uv_angle_limit,
+                margin_method=context.scene.atlasmap_uv_margin_method,
+                island_margin=context.scene.atlasmap_uv_island_margin,
+                rotate_method=context.scene.atlasmap_uv_rotate_method,
+                area_weight=context.scene.atlasmap_uv_area_weight,
+                correct_aspect=context.scene.atlasmap_uv_correct_aspect,
+                scale_to_bounds=context.scene.atlasmap_uv_scale_to_bounds,
+            )
+        except RuntimeError as error:
+            self.report({"ERROR"}, f"Smart UV Project failed: {error}")
+            return {"CANCELLED"}
+        finally:
+            if obj.mode != previous_mode:
+                bpy.ops.object.mode_set(mode=previous_mode)
+
+        if "FINISHED" not in result:
+            self.report({"ERROR"}, "Smart UV Project did not finish.")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Smart unwrapped {obj.name} into UV layer 2.")
+        return {"FINISHED"}
+
+
 class ATLASMAP_UL_material_textures(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if item.type == "TEX_IMAGE" and item.image is not None:
@@ -267,15 +319,37 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        pass
+        self.layout.operator(ATLASMAP_OT_smart_unwrap_uv1.bl_idname, icon="UV")
+
+
+class ATLASMAP_PT_uv1_unwrap_settings(bpy.types.Panel):
+    bl_label = "UV Unwrap Settings"
+    bl_idname = "ATLASMAP_PT_uv1_unwrap_settings"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_parent_id = "ATLASMAP_PT_ambient_occlusion_baking"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(context.scene, "atlasmap_uv_angle_limit", text="Angle Limit")
+        layout.prop(context.scene, "atlasmap_uv_island_margin", text="Island Margin")
+        layout.prop(context.scene, "atlasmap_uv_margin_method", text="Margin Method")
+        layout.prop(context.scene, "atlasmap_uv_rotate_method", text="Rotate Method")
+        layout.prop(context.scene, "atlasmap_uv_area_weight", text="Area Weight")
+        layout.prop(context.scene, "atlasmap_uv_correct_aspect", text="Correct Aspect")
+        layout.prop(context.scene, "atlasmap_uv_scale_to_bounds", text="Scale to Bounds")
 
 
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
+    ATLASMAP_OT_smart_unwrap_uv1,
     ATLASMAP_UL_material_textures,
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
     ATLASMAP_PT_ambient_occlusion_baking,
+    ATLASMAP_PT_uv1_unwrap_settings,
 )
 
 
@@ -298,6 +372,56 @@ def register():
         description="Pack metallic into red and roughness or smoothness into blue of a single MOS texture",
         default=False,
     )
+    bpy.types.Scene.atlasmap_uv_angle_limit = bpy.props.FloatProperty(
+        name="Angle Limit",
+        description="Maximum face angle before a new UV island is created",
+        subtype="ANGLE",
+        default=1.151917,
+        min=0.0,
+        max=1.570796,
+    )
+    bpy.types.Scene.atlasmap_uv_island_margin = bpy.props.FloatProperty(
+        name="Island Margin",
+        description="Spacing between generated UV islands",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    bpy.types.Scene.atlasmap_uv_margin_method = bpy.props.EnumProperty(
+        name="Margin Method",
+        items=(
+            ("SCALED", "Scaled", "Scale island spacing with the UV layout"),
+            ("ADD", "Add", "Add a fixed spacing between islands"),
+            ("FRACTION", "Fraction", "Use a fraction of the UV space"),
+        ),
+        default="SCALED",
+    )
+    bpy.types.Scene.atlasmap_uv_rotate_method = bpy.props.EnumProperty(
+        name="Rotate Method",
+        items=(
+            ("AXIS_ALIGNED", "Axis-aligned", "Rotate islands to best fit the UV space"),
+            ("AXIS_ALIGNED_X", "Horizontal", "Align islands horizontally"),
+            ("AXIS_ALIGNED_Y", "Vertical", "Align islands vertically"),
+        ),
+        default="AXIS_ALIGNED_Y",
+    )
+    bpy.types.Scene.atlasmap_uv_area_weight = bpy.props.FloatProperty(
+        name="Area Weight",
+        description="Weight larger faces when packing UV islands",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    bpy.types.Scene.atlasmap_uv_correct_aspect = bpy.props.BoolProperty(
+        name="Correct Aspect",
+        description="Account for image aspect ratio during unwrapping",
+        default=True,
+    )
+    bpy.types.Scene.atlasmap_uv_scale_to_bounds = bpy.props.BoolProperty(
+        name="Scale to Bounds",
+        description="Scale UV islands to fill the UV square",
+        default=False,
+    )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
@@ -309,3 +433,10 @@ def unregister():
     del bpy.types.Scene.atlasmap_convert_to_smoothness
     del bpy.types.Scene.atlasmap_channel_pack
     del bpy.types.Scene.atlasmap_texture_size
+    del bpy.types.Scene.atlasmap_uv_angle_limit
+    del bpy.types.Scene.atlasmap_uv_island_margin
+    del bpy.types.Scene.atlasmap_uv_margin_method
+    del bpy.types.Scene.atlasmap_uv_rotate_method
+    del bpy.types.Scene.atlasmap_uv_area_weight
+    del bpy.types.Scene.atlasmap_uv_correct_aspect
+    del bpy.types.Scene.atlasmap_uv_scale_to_bounds
