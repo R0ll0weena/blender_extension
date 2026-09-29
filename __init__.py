@@ -211,7 +211,9 @@ class ATLASMAP_OT_smart_unwrap_uv1(bpy.types.Operator):
                 bpy.ops.object.mode_set(mode="OBJECT")
 
             uv_layers = obj.data.uv_layers
-            if len(uv_layers) < 2:
+            if len(uv_layers) == 0:
+                uv_layers.new(name="UVMap")
+            if len(uv_layers) == 1:
                 uv_layers.new(name="UV1")
             uv_layers.active_index = 1
 
@@ -253,6 +255,11 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
         if obj is None or obj.type != "MESH":
             self.report({"ERROR"}, "The active object must be a mesh.")
             return {"CANCELLED"}
+        if context.scene.atlasmap_ao_reunwrap_uv1:
+            unwrap_result = bpy.ops.atlasmap.smart_unwrap_uv1()
+            if "FINISHED" not in unwrap_result:
+                self.report({"ERROR"}, "Could not re-unwrap UV1; AO bake cancelled.")
+                return {"CANCELLED"}
         if len(obj.data.uv_layers) < 2:
             self.report({"ERROR"}, "Unwrap UV1 before baking ambient occlusion.")
             return {"CANCELLED"}
@@ -317,8 +324,6 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
         previous_engine = scene.render.engine
         previous_samples = scene.cycles.samples
         previous_margin = scene.render.bake.margin
-        previous_margin_type = scene.render.bake.margin_type
-        previous_clear = scene.render.bake.use_clear
         result = {"CANCELLED"}
         bake_error = None
         try:
@@ -331,8 +336,6 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             scene.render.engine = "CYCLES"
             scene.cycles.samples = samples
             scene.render.bake.margin = round(scene.atlasmap_ao_island_margin * resolution)
-            scene.render.bake.margin_type = scene.atlasmap_ao_margin_type
-            scene.render.bake.use_clear = scene.atlasmap_ao_clear_image
             result = bpy.ops.object.bake(
                 type="AO",
                 uv_layer=obj.data.uv_layers[1].name,
@@ -343,8 +346,6 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             scene.render.engine = previous_engine
             scene.cycles.samples = previous_samples
             scene.render.bake.margin = previous_margin
-            scene.render.bake.margin_type = previous_margin_type
-            scene.render.bake.use_clear = previous_clear
             for nodes, active_node in previous_active_nodes:
                 nodes.active = active_node
             for node in previous_selected:
@@ -466,6 +467,7 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
 
         layout.operator(ATLASMAP_OT_smart_unwrap_uv1.bl_idname, icon="UV")
         layout.separator()
+        layout.prop(context.scene, "atlasmap_ao_reunwrap_uv1", text="Re-unwrap UV1")
         layout.prop(context.scene, "atlasmap_ao_texture_size", text="Texture Size")
         layout.prop(context.scene, "atlasmap_ao_cycles_samples", text="Cycles Samples")
         layout.prop(context.scene, "atlasmap_ao_island_margin", text="Island Margin")
@@ -476,21 +478,6 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
         )
 
 
-class ATLASMAP_PT_ao_bake_advanced_settings(bpy.types.Panel):
-    bl_label = "Additional Bake Settings"
-    bl_idname = "ATLASMAP_PT_ao_bake_advanced_settings"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "AtlasMap"
-    bl_parent_id = "ATLASMAP_PT_ambient_occlusion_baking"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(context.scene, "atlasmap_ao_margin_type", text="Bake Margin Type")
-        layout.prop(context.scene, "atlasmap_ao_clear_image", text="Clear Image Before Bake")
-
-
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
     ATLASMAP_OT_smart_unwrap_uv1,
@@ -499,7 +486,6 @@ _CLASSES = (
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
     ATLASMAP_PT_ambient_occlusion_baking,
-    ATLASMAP_PT_ao_bake_advanced_settings,
 )
 
 
@@ -579,6 +565,11 @@ def register():
         min=16,
         max=16384,
     )
+    bpy.types.Scene.atlasmap_ao_reunwrap_uv1 = bpy.props.BoolProperty(
+        name="Re-unwrap UV1",
+        description="Run Smart UV Project on the second UV layer before each AO bake",
+        default=True,
+    )
     bpy.types.Scene.atlasmap_ao_cycles_samples = bpy.props.IntProperty(
         name="Cycles Samples",
         description="Cycles samples used for the bake",
@@ -592,19 +583,6 @@ def register():
         default=0.0,
         min=0.0,
         max=0.25,
-    )
-    bpy.types.Scene.atlasmap_ao_margin_type = bpy.props.EnumProperty(
-        name="Bake Margin Type",
-        items=(
-            ("EXTEND", "Extend", "Extend baked colors into the image margin"),
-            ("ADJACENT_FACES", "Adjacent Faces", "Fill the margin using adjacent mesh faces"),
-        ),
-        default="EXTEND",
-    )
-    bpy.types.Scene.atlasmap_ao_clear_image = bpy.props.BoolProperty(
-        name="Clear Image Before Bake",
-        description="Clear the target image before baking",
-        default=True,
     )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
@@ -625,7 +603,6 @@ def unregister():
     del bpy.types.Scene.atlasmap_uv_correct_aspect
     del bpy.types.Scene.atlasmap_uv_scale_to_bounds
     del bpy.types.Scene.atlasmap_ao_texture_size
+    del bpy.types.Scene.atlasmap_ao_reunwrap_uv1
     del bpy.types.Scene.atlasmap_ao_cycles_samples
     del bpy.types.Scene.atlasmap_ao_island_margin
-    del bpy.types.Scene.atlasmap_ao_margin_type
-    del bpy.types.Scene.atlasmap_ao_clear_image
