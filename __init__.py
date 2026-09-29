@@ -1,4 +1,64 @@
 import bpy
+import numpy as np
+
+
+def _resample_kernel(distance, method):
+    distance = np.abs(distance)
+    if method == "BILINEAR":
+        return np.maximum(1.0 - distance, 0.0)
+    if method == "BICUBIC":
+        a = -0.5
+        near = ((a + 2.0) * distance - (a + 3.0)) * distance * distance + 1.0
+        far = ((a * distance - 5.0 * a) * distance + 8.0 * a) * distance - 4.0 * a
+        return np.where(distance < 1.0, near, np.where(distance < 2.0, far, 0.0))
+    if method == "LANCZOS":
+        weights = np.sinc(distance) * np.sinc(distance / 3.0)
+        return np.where(distance < 3.0, np.where(distance == 0.0, 1.0, weights), 0.0)
+    raise ValueError(f"Unsupported resampling method: {method}")
+
+
+def _resample_axis(pixels, target_size, axis, method):
+    source = np.moveaxis(pixels, axis, 0)
+    source_size = source.shape[0]
+    if source_size == target_size:
+        return pixels
+
+    coordinates = (np.arange(target_size, dtype=np.float64) + 0.5) * source_size / target_size - 0.5
+    if method == "NEAREST":
+        indices = np.clip(np.floor(coordinates + 0.5).astype(np.intp), 0, source_size - 1)
+        result = source[indices]
+    else:
+        radius = {"BILINEAR": 1, "BICUBIC": 2, "LANCZOS": 3}[method]
+        base_indices = np.floor(coordinates).astype(np.intp)
+        result = np.zeros((target_size,) + source.shape[1:], dtype=np.float32)
+        weight_sum = np.zeros(target_size, dtype=np.float64)
+        for offset in range(-radius + 1, radius + 1):
+            indices = base_indices + offset
+            weights = _resample_kernel(coordinates - indices, method)
+            clipped_indices = np.clip(indices, 0, source_size - 1)
+            result += source[clipped_indices] * weights.reshape((-1,) + (1,) * (source.ndim - 1))
+            weight_sum += weights
+        result /= np.maximum(weight_sum, np.finfo(np.float64).eps).reshape(
+            (-1,) + (1,) * (source.ndim - 1)
+        )
+    return np.moveaxis(result, 0, axis)
+
+
+def _resample_image(image, scale_factor, method):
+    source_width, source_height = image.size[:]
+    target_width = max(1, round(source_width * scale_factor))
+    target_height = max(1, round(source_height * scale_factor))
+    source_pixels = np.empty(source_width * source_height * 4, dtype=np.float32)
+    image.pixels.foreach_get(source_pixels)
+    pixels = source_pixels.reshape((source_height, source_width, 4))
+    pixels = _resample_axis(pixels, target_width, 1, method)
+    pixels = _resample_axis(pixels, target_height, 0, method)
+
+    image.scale(target_width, target_height)
+    image.pixels.foreach_set(np.asarray(pixels, dtype=np.float32).ravel())
+    if image.packed_file is not None:
+        image.pack()
+    return target_width, target_height
 
 
 def _create_albedo_texture(material, principled, texture_size):
@@ -354,6 +414,48 @@ class ATLASMAP_OT_smart_unwrap_uv1(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ATLASMAP_OT_resample_selected_texture(bpy.types.Operator):
+    """Resample the selected material image texture in place."""
+
+    bl_idname = "atlasmap.resample_selected_texture"
+    bl_label = "Resample Texture"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+
+        texture_index = context.scene.atlasmap_texture_index
+        nodes = material.node_tree.nodes
+        if texture_index < 0 or texture_index >= len(nodes):
+            self.report({"ERROR"}, "Select an image texture from the list first.")
+            return {"CANCELLED"}
+        texture_node = nodes[texture_index]
+        if texture_node.type != "TEX_IMAGE" or texture_node.image is None:
+            self.report({"ERROR"}, "The selected node has no image texture to resample.")
+            return {"CANCELLED"}
+
+        image = texture_node.image
+        if image.source != "GENERATED" and not image.has_data:
+            self.report({"ERROR"}, "The selected texture image has no pixel data loaded.")
+            return {"CANCELLED"}
+        try:
+            width, height = _resample_image(
+                image,
+                context.scene.atlasmap_resample_factor,
+                context.scene.atlasmap_resample_method,
+            )
+        except (RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, f"Texture resampling failed: {error}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Resampled {image.name} to {width} x {height}.")
+        return {"FINISHED"}
+
+
 class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
     """Bake ambient occlusion into an image using the active mesh's UV1 layer."""
 
@@ -546,7 +648,7 @@ class ATLASMAP_PT_generate_textures(bpy.types.Panel):
 
 
 class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
-    bl_label = "Normalize Textures"
+    bl_label = "Scale Textures"
     bl_idname = "ATLASMAP_PT_normalize_textures"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -578,6 +680,9 @@ class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
             )
         else:
             layout.label(text="No image textures found", icon="INFO")
+        layout.prop(context.scene, "atlasmap_resample_factor", text="Rescale Factor")
+        layout.prop(context.scene, "atlasmap_resample_method", text="Resample Method")
+        layout.operator(ATLASMAP_OT_resample_selected_texture.bl_idname, icon="IMAGE" )
 
 
 class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
@@ -618,6 +723,7 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
     ATLASMAP_OT_smart_unwrap_uv1,
+    ATLASMAP_OT_resample_selected_texture,
     ATLASMAP_OT_bake_ambient_occlusion,
     ATLASMAP_UL_material_textures,
     ATLASMAP_PT_generate_textures,
@@ -635,6 +741,24 @@ def register():
         max=8192,
     )
     bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.atlasmap_resample_factor = bpy.props.FloatProperty(
+        name="Rescale Factor",
+        description="Scale the selected image's width and height by this factor",
+        default=0.5,
+        min=0.01,
+        max=16.0,
+        precision=2,
+    )
+    bpy.types.Scene.atlasmap_resample_method = bpy.props.EnumProperty(
+        name="Resample Method",
+        items=(
+            ("NEAREST", "Nearest", "Nearest-neighbor sampling"),
+            ("BILINEAR", "Bilinear", "Linear interpolation"),
+            ("BICUBIC", "Bicubic", "Cubic interpolation"),
+            ("LANCZOS", "Lanczos", "Lanczos windowed-sinc interpolation"),
+        ),
+        default="BICUBIC",
+    )
     bpy.types.Scene.atlasmap_convert_to_smoothness = bpy.props.BoolProperty(
         name="Smoothness",
         description="Generate an inverted smoothness texture and invert it again for the Principled BSDF",
@@ -729,6 +853,8 @@ def unregister():
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.atlasmap_texture_index
+    del bpy.types.Scene.atlasmap_resample_factor
+    del bpy.types.Scene.atlasmap_resample_method
     del bpy.types.Scene.atlasmap_convert_to_smoothness
     del bpy.types.Scene.atlasmap_channel_pack
     del bpy.types.Scene.atlasmap_texture_size
