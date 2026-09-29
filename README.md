@@ -8,8 +8,8 @@ A Blender 4.2+ extension that converts an active material's Principled BSDF Base
 2. Choose **Install from Disk** and select this extension's ZIP archive.
 3. Enable **Hello Extension** if Blender does not enable it automatically.
 4. In the 3D View, open the sidebar with `N` and choose the **AtlasMap** tab.
-5. Set the options under **Generated Texture Settings**, then click **Convert Shader to Textures**. Enable **Smoothness** to generate an inverted smoothness map instead of roughness. Enable **Channel Pack** to put metallic in the red channel and roughness or smoothness in the blue channel of one `_MOS` texture. The generated images are packed into the current `.blend` file.
-6. The panel lists image textures in the active material in a scrollable list, with **Name** and **Size** columns.
+5. Expand **Generate Textures** to set options and click **Convert Shader to Textures**. Enable **Smoothness** to generate an inverted smoothness map instead of roughness. Enable **Channel Pack** to put metallic in the red channel and roughness or smoothness in the blue channel of one `_MOS` texture. The generated images are packed into the current `.blend` file.
+6. Expand **Normalize Textures** to view the active material's image textures in a scrollable list, with **Name** and **Size** columns. **Ambient Occlusion Baking** is a separate collapsible area.
 
 ## Build a ZIP
 

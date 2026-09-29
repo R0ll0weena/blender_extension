@@ -206,7 +206,7 @@ class ATLASMAP_UL_material_textures(bpy.types.UIList):
 
 
 class HELLOEXTENSION_PT_panel(bpy.types.Panel):
-    """Controls for converting active material values into textures."""
+    """Parent panel for AtlasMap's collapsible tool sections."""
 
     bl_label = "AtlasMap"
     bl_idname = "HELLOEXTENSION_PT_panel"
@@ -215,15 +215,37 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
     bl_category = "AtlasMap"
 
     def draw(self, context):
+        pass
+
+
+class ATLASMAP_PT_generate_textures(bpy.types.Panel):
+    bl_label = "Generate Textures"
+    bl_idname = "ATLASMAP_PT_generate_textures"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
         layout = self.layout
-        layout.label(text="Generate Textures", icon="TEXTURE")
         layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
         layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Smoothness")
         layout.prop(context.scene, "atlasmap_channel_pack", text="Channel Pack")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
-        layout.separator()
-        layout.label(text="Normalize Textures", icon="IMAGE_DATA")
+
+class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
+    bl_label = "Normalize Textures"
+    bl_idname = "ATLASMAP_PT_normalize_textures"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
         obj = context.active_object
         material = obj.active_material if obj else None
         if material and material.use_nodes and any(
@@ -247,14 +269,27 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
         else:
             layout.label(text="No image textures found", icon="INFO")
 
-        layout.separator()
-        layout.label(text="Ambient Occlusion Baking", icon="RENDER_STILL")
+
+class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
+    bl_label = "Ambient Occlusion Baking"
+    bl_idname = "ATLASMAP_PT_ambient_occlusion_baking"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        pass
 
 
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
     ATLASMAP_UL_material_textures,
     HELLOEXTENSION_PT_panel,
+    ATLASMAP_PT_generate_textures,
+    ATLASMAP_PT_normalize_textures,
+    ATLASMAP_PT_ambient_occlusion_baking,
 )
 
 
