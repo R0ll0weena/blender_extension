@@ -205,26 +205,13 @@ class ATLASMAP_UL_material_textures(bpy.types.UIList):
         return flags, []
 
 
-class HELLOEXTENSION_PT_panel(bpy.types.Panel):
-    """Parent panel for AtlasMap's collapsible tool sections."""
-
-    bl_label = "AtlasMap"
-    bl_idname = "HELLOEXTENSION_PT_panel"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "AtlasMap"
-
-    def draw(self, context):
-        pass
-
-
 class ATLASMAP_PT_generate_textures(bpy.types.Panel):
     bl_label = "Generate Textures"
     bl_idname = "ATLASMAP_PT_generate_textures"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "AtlasMap"
-    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_order = 0
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -241,7 +228,7 @@ class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "AtlasMap"
-    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_order = 1
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -276,7 +263,7 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "AtlasMap"
-    bl_parent_id = "HELLOEXTENSION_PT_panel"
+    bl_order = 2
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -286,7 +273,6 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
     ATLASMAP_UL_material_textures,
-    HELLOEXTENSION_PT_panel,
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
     ATLASMAP_PT_ambient_occlusion_baking,
