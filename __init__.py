@@ -1,6 +1,100 @@
 import bpy
 
 
+def _create_albedo_texture(material, principled, texture_size):
+    color = tuple(principled.inputs["Base Color"].default_value)
+    image = bpy.data.images.new(
+        name=f"{material.name}_A",
+        width=texture_size,
+        height=texture_size,
+        alpha=True,
+        float_buffer=True,
+    )
+    image.colorspace_settings.name = "sRGB"
+    image.pixels.foreach_set(color * (texture_size * texture_size))
+    image.pack()
+
+    texture_node = material.node_tree.nodes.new("ShaderNodeTexImage")
+    texture_node.image = image
+    texture_node.label = "Albedo"
+    texture_node.location = (principled.location.x - 700, principled.location.y + 80)
+    return texture_node
+
+
+def _setup_ao_material_graph(material, principled, ao_image, ao_node, texture_size):
+    node_tree = material.node_tree
+    base_color_input = principled.inputs["Base Color"]
+    mix_node = next(
+        (node for node in node_tree.nodes if node.get("atlasmap_ao_multiply", False)),
+        None,
+    )
+
+    albedo_node = None
+    if mix_node is not None:
+        albedo_links = mix_node.inputs["A"].links
+        if albedo_links and albedo_links[0].from_node.type == "TEX_IMAGE":
+            albedo_node = albedo_links[0].from_node
+
+    if albedo_node is None:
+        upstream_nodes = []
+        pending_nodes = [link.from_node for link in base_color_input.links]
+        visited = set()
+        while pending_nodes:
+            node = pending_nodes.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            if node.type == "TEX_IMAGE" and node.image is not None:
+                if not node.get("atlasmap_ao_target", False) and node.image != ao_image:
+                    upstream_nodes.append(node)
+                continue
+            pending_nodes.extend(link.from_node for socket in node.inputs for link in socket.links)
+
+        albedo_node = next(
+            (
+                node
+                for node in upstream_nodes
+                if node.label == "Albedo" or node.image.name.endswith("_A")
+            ),
+            upstream_nodes[0] if upstream_nodes else None,
+        )
+
+    if albedo_node is None:
+        albedo_node = next(
+            (
+                node
+                for node in node_tree.nodes
+                if node.type == "TEX_IMAGE"
+                and node.image is not None
+                and (node.label == "Albedo" or node.image.name.endswith("_A"))
+            ),
+            None,
+        )
+    if albedo_node is None:
+        albedo_node = _create_albedo_texture(material, principled, texture_size)
+
+    albedo_node.location = (principled.location.x - 700, principled.location.y + 80)
+    ao_node.label = "Ambient Occlusion"
+    ao_node.location = (albedo_node.location.x, albedo_node.location.y - 320)
+
+    if mix_node is None:
+        mix_node = node_tree.nodes.new("ShaderNodeMix")
+        mix_node["atlasmap_ao_multiply"] = True
+    mix_node.data_type = "RGBA"
+    mix_node.blend_type = "MULTIPLY"
+    mix_node.inputs["Factor"].default_value = 1.0
+    mix_node.location = (principled.location.x - 300, principled.location.y + 80)
+
+    for socket in (mix_node.inputs["A"], mix_node.inputs["B"]):
+        for link in list(socket.links):
+            node_tree.links.remove(link)
+    for link in list(base_color_input.links):
+        node_tree.links.remove(link)
+    node_tree.links.new(albedo_node.outputs["Color"], mix_node.inputs["A"])
+    node_tree.links.new(ao_node.outputs["Color"], mix_node.inputs["B"])
+    node_tree.links.new(mix_node.outputs["Result"], base_color_input)
+
+
 class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
     """Create solid-color textures from the active material's Principled BSDF."""
 
@@ -52,6 +146,11 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
 
             if socket_name == "Roughness" and smoothness_enabled:
                 value = 1.0 - value
+            if socket_name == "Base Color":
+                texture_node = _create_albedo_texture(material, principled, texture_size)
+                node_tree.links.new(texture_node.outputs["Color"], input_socket)
+                created_maps.append(map_name)
+                continue
             color = value if socket_name == "Base Color" else (value, value, value, 1.0)
             image = bpy.data.images.new(
                 name=f"{material.name}{suffix}",
@@ -288,6 +387,8 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
         image.colorspace_settings.name = "Non-Color"
 
         materials = list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material))
+        material_ao_nodes = {}
+        temporarily_removed_ao_links = []
         created_nodes = []
         previous_active_nodes = []
         previous_selected = []
@@ -317,6 +418,7 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
                 created_nodes.append(target_node)
             target_node.select = True
             nodes.active = target_node
+            material_ao_nodes[material] = target_node
 
         previous_mode = obj.mode
         previous_active_object = context.view_layer.objects.active
@@ -336,6 +438,13 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             scene.render.engine = "CYCLES"
             scene.cycles.samples = samples
             scene.render.bake.margin = round(scene.atlasmap_ao_island_margin * resolution)
+            for ao_node in material_ao_nodes.values():
+                for output_socket in ao_node.outputs:
+                    for link in list(output_socket.links):
+                        temporarily_removed_ao_links.append(
+                            (link.from_socket, link.to_socket, link.to_node.id_data.links)
+                        )
+                        link.to_node.id_data.links.remove(link)
             result = bpy.ops.object.bake(
                 type="AO",
                 uv_layer=obj.data.uv_layers[1].name,
@@ -346,6 +455,8 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             scene.render.engine = previous_engine
             scene.cycles.samples = previous_samples
             scene.render.bake.margin = previous_margin
+            for from_socket, to_socket, links in temporarily_removed_ao_links:
+                links.new(from_socket, to_socket)
             for nodes, active_node in previous_active_nodes:
                 nodes.active = active_node
             for node in previous_selected:
@@ -371,6 +482,13 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             return {"CANCELLED"}
 
         image.pack()
+        for material, ao_node in material_ao_nodes.items():
+            principled = next(
+                (node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"),
+                None,
+            )
+            if principled is not None:
+                _setup_ao_material_graph(material, principled, image, ao_node, resolution)
         self.report({"INFO"}, f"Ambient occlusion baked to {image.name} ({resolution}px, {samples} samples).")
         return {"FINISHED"}
 
