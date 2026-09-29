@@ -1,6 +1,6 @@
 # Hello Extension
 
-A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures.
+A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures, and adds a neutral normal map.
 
 ## Install in Blender
 
@@ -23,4 +23,4 @@ Install the generated ZIP from `../hello_extension_dist` using **Install from Di
 
 Before publishing, replace the `maintainer` value in `blender_manifest.toml` and update the extension ID, name, and other metadata as needed.
 
-The operator expects the three Principled BSDF inputs to contain unlinked values. It will not replace inputs that are already connected.
+Connected Principled BSDF inputs are left unchanged; textures are generated only for unconnected inputs. The neutral normal map is decoded through a tangent-space Normal Map node.
