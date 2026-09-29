@@ -505,7 +505,7 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
                     principled,
                     image,
                     ao_node,
-                    resolution,
+                    scene.atlasmap_texture_size,
                     obj.data.uv_layers[1].name,
                 )
         self.report({"INFO"}, f"Ambient occlusion baked to {image.name} ({resolution}px, {samples} samples).")
