@@ -53,7 +53,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             texture_node = node_tree.nodes.new("ShaderNodeTexImage")
             texture_node.image = image
             texture_node.label = map_name
-            texture_node.location = (principled.location.x - 280, principled.location.y - index * 240)
+            texture_node.location = (principled.location.x - 560, principled.location.y - index * 360)
             node_tree.links.new(texture_node.outputs["Color"], input_socket)
             created_maps.append(map_name)
 
@@ -76,12 +76,18 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             normal_texture = node_tree.nodes.new("ShaderNodeTexImage")
             normal_texture.image = normal_image
             normal_texture.label = "Normal"
-            normal_texture.location = (principled.location.x - 560, principled.location.y - 720)
+            normal_texture.location = (
+                principled.location.x - 560,
+                principled.location.y - len(values) * 360,
+            )
 
             normal_map = node_tree.nodes.new("ShaderNodeNormalMap")
             normal_map.label = "Normal Map"
             normal_map.space = "TANGENT"
-            normal_map.location = (principled.location.x - 280, principled.location.y - 720)
+            normal_map.location = (
+                principled.location.x - 280,
+                principled.location.y - len(values) * 360,
+            )
             node_tree.links.new(normal_texture.outputs["Color"], normal_map.inputs["Color"])
             node_tree.links.new(normal_map.outputs["Normal"], normal_input)
             created_maps.append("Normal")
