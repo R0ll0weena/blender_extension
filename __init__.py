@@ -102,6 +102,22 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ATLASMAP_UL_material_textures(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if item.type == "TEX_IMAGE" and item.image is not None:
+            columns = layout.split(factor=0.7, align=True)
+            columns.label(text=item.image.name, icon="IMAGE_DATA")
+            columns.label(text=f"{item.image.size[0]} x {item.image.size[1]}")
+
+    def filter_items(self, context, data, property_name):
+        nodes = getattr(data, property_name)
+        flags = [
+            self.bitflag_filter_item if node.type == "TEX_IMAGE" and node.image is not None else 0
+            for node in nodes
+        ]
+        return flags, []
+
+
 class HELLOEXTENSION_PT_panel(bpy.types.Panel):
     """Controls for converting active material values into textures."""
 
@@ -116,9 +132,35 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
         layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
+        layout.separator()
+        layout.label(text="Active Material Textures", icon="IMAGE_DATA")
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material and material.use_nodes and any(
+            node.type == "TEX_IMAGE" and node.image is not None
+            for node in material.node_tree.nodes
+        ):
+            header = layout.row(align=True)
+            columns = header.split(factor=0.7, align=True)
+            columns.label(text="Name")
+            columns.label(text="Size")
+            layout.template_list(
+                "ATLASMAP_UL_material_textures",
+                "",
+                material.node_tree,
+                "nodes",
+                context.scene,
+                "atlasmap_texture_index",
+                rows=4,
+                maxrows=4,
+            )
+        else:
+            layout.label(text="No image textures found", icon="INFO")
+
 
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
+    ATLASMAP_UL_material_textures,
     HELLOEXTENSION_PT_panel,
 )
 
@@ -131,6 +173,7 @@ def register():
         min=1,
         max=8192,
     )
+    bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0)
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
@@ -138,4 +181,5 @@ def register():
 def unregister():
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.atlasmap_texture_index
     del bpy.types.Scene.atlasmap_texture_size
