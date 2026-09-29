@@ -241,6 +241,141 @@ class ATLASMAP_OT_smart_unwrap_uv1(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
+    """Bake ambient occlusion into an image using the active mesh's UV1 layer."""
+
+    bl_idname = "atlasmap.bake_ambient_occlusion"
+    bl_label = "Bake Ambient Occlusion"
+    bl_options = {"REGISTER", "UNDO"}
+
+    test_bake: bpy.props.BoolProperty(default=False, options={"HIDDEN"})
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "The active object must be a mesh.")
+            return {"CANCELLED"}
+        if len(obj.data.uv_layers) < 2:
+            self.report({"ERROR"}, "Unwrap UV1 before baking ambient occlusion.")
+            return {"CANCELLED"}
+        if not any(slot.material for slot in obj.material_slots):
+            self.report({"ERROR"}, "Assign a material to the active mesh before baking.")
+            return {"CANCELLED"}
+
+        scene = context.scene
+        resolution = scene.atlasmap_ao_texture_size
+        samples = scene.atlasmap_ao_cycles_samples
+        suffix = "_AO_TEST" if self.test_bake else "_AO"
+        image_name = f"{obj.name}{suffix}"
+        image = bpy.data.images.get(image_name)
+        image_created = image is None
+        if image is None:
+            image = bpy.data.images.new(
+                image_name,
+                width=resolution,
+                height=resolution,
+                alpha=False,
+                float_buffer=False,
+            )
+        elif image.size[:] != (resolution, resolution):
+            image.scale(resolution, resolution)
+        image.colorspace_settings.name = "Non-Color"
+
+        materials = list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material))
+        created_nodes = []
+        previous_active_nodes = []
+        previous_selected = []
+        for material in materials:
+            material.use_nodes = True
+            nodes = material.node_tree.nodes
+            previous_active_nodes.append((nodes, nodes.active))
+            for node in nodes:
+                if node.select:
+                    previous_selected.append(node)
+                    node.select = False
+            target_node = next(
+                (
+                    node
+                    for node in nodes
+                    if node.type == "TEX_IMAGE"
+                    and node.get("atlasmap_ao_target", False)
+                    and node.image == image
+                ),
+                None,
+            )
+            if target_node is None:
+                target_node = nodes.new("ShaderNodeTexImage")
+                target_node.image = image
+                target_node.label = "AO Test Target" if self.test_bake else "AO Target"
+                target_node["atlasmap_ao_target"] = True
+                created_nodes.append(target_node)
+            target_node.select = True
+            nodes.active = target_node
+
+        previous_mode = obj.mode
+        previous_active_object = context.view_layer.objects.active
+        previous_selected_objects = [item for item in context.selected_objects]
+        previous_engine = scene.render.engine
+        previous_samples = scene.cycles.samples
+        previous_margin = scene.render.bake.margin
+        previous_margin_type = scene.render.bake.margin_type
+        previous_clear = scene.render.bake.use_clear
+        result = {"CANCELLED"}
+        bake_error = None
+        try:
+            if previous_mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            for selected_object in context.selected_objects:
+                selected_object.select_set(False)
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            scene.render.engine = "CYCLES"
+            scene.cycles.samples = samples
+            scene.render.bake.margin = round(scene.atlasmap_ao_island_margin * resolution)
+            scene.render.bake.margin_type = scene.atlasmap_ao_margin_type
+            scene.render.bake.use_clear = scene.atlasmap_ao_clear_image
+            result = bpy.ops.object.bake(
+                type="AO",
+                uv_layer=obj.data.uv_layers[1].name,
+            )
+        except RuntimeError as error:
+            bake_error = str(error)
+        finally:
+            scene.render.engine = previous_engine
+            scene.cycles.samples = previous_samples
+            scene.render.bake.margin = previous_margin
+            scene.render.bake.margin_type = previous_margin_type
+            scene.render.bake.use_clear = previous_clear
+            for nodes, active_node in previous_active_nodes:
+                nodes.active = active_node
+            for node in previous_selected:
+                if node.name in node.id_data.nodes:
+                    node.select = True
+            for selected_object in context.selected_objects:
+                selected_object.select_set(False)
+            for selected_object in previous_selected_objects:
+                selected_object.select_set(True)
+            context.view_layer.objects.active = previous_active_object
+            if obj.mode != previous_mode:
+                bpy.ops.object.mode_set(mode=previous_mode)
+
+        if bake_error or "FINISHED" not in result:
+            for node in created_nodes:
+                node.id_data.nodes.remove(node)
+            if image_created and image.users == 0:
+                bpy.data.images.remove(image)
+            if bake_error:
+                self.report({"ERROR"}, f"Ambient occlusion bake failed: {bake_error}")
+            else:
+                self.report({"ERROR"}, "Ambient occlusion bake did not finish.")
+            return {"CANCELLED"}
+
+        image.pack()
+        bake_kind = "Test ambient occlusion" if self.test_bake else "Ambient occlusion"
+        self.report({"INFO"}, f"{bake_kind} baked to {image.name} ({resolution}px, {samples} samples).")
+        return {"FINISHED"}
+
+
 class ATLASMAP_UL_material_textures(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if item.type == "TEX_IMAGE" and item.image is not None:
@@ -319,7 +454,38 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        self.layout.operator(ATLASMAP_OT_smart_unwrap_uv1.bl_idname, icon="UV")
+        layout = self.layout
+        layout.prop(context.scene, "atlasmap_ao_texture_size_preset", text="Texture Size Preset")
+        layout.prop(context.scene, "atlasmap_ao_texture_size", text="Texture Size")
+        layout.prop(context.scene, "atlasmap_ao_samples_preset", text="Cycles Samples Preset")
+        layout.prop(context.scene, "atlasmap_ao_cycles_samples", text="Cycles Samples")
+        layout.prop(context.scene, "atlasmap_ao_island_margin", text="Island Margin")
+        test_operator = layout.operator(
+            ATLASMAP_OT_bake_ambient_occlusion.bl_idname,
+            text="Bake Test Ambient Occlusion",
+            icon="RENDER_STILL",
+        )
+        test_operator.test_bake = True
+        layout.operator(
+            ATLASMAP_OT_bake_ambient_occlusion.bl_idname,
+            text="Bake Ambient Occlusion",
+            icon="RENDER_STILL",
+        )
+
+
+class ATLASMAP_PT_ao_bake_advanced_settings(bpy.types.Panel):
+    bl_label = "Additional Bake Settings"
+    bl_idname = "ATLASMAP_PT_ao_bake_advanced_settings"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_parent_id = "ATLASMAP_PT_ambient_occlusion_baking"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(context.scene, "atlasmap_ao_margin_type", text="Bake Margin Type")
+        layout.prop(context.scene, "atlasmap_ao_clear_image", text="Clear Image Before Bake")
 
 
 class ATLASMAP_PT_uv1_unwrap_settings(bpy.types.Panel):
@@ -328,7 +494,7 @@ class ATLASMAP_PT_uv1_unwrap_settings(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "AtlasMap"
-    bl_parent_id = "ATLASMAP_PT_ambient_occlusion_baking"
+    bl_order = 3
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -342,15 +508,41 @@ class ATLASMAP_PT_uv1_unwrap_settings(bpy.types.Panel):
         layout.prop(context.scene, "atlasmap_uv_scale_to_bounds", text="Scale to Bounds")
 
 
+class ATLASMAP_PT_uv1_unwrap_button(bpy.types.Panel):
+    bl_label = "Unwrap UV1"
+    bl_idname = "ATLASMAP_PT_uv1_unwrap_button"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_order = 4
+    bl_options = {"HIDE_HEADER"}
+
+    def draw(self, context):
+        self.layout.operator(ATLASMAP_OT_smart_unwrap_uv1.bl_idname, icon="UV")
+
+
 _CLASSES = (
     ATLASMAP_OT_convert_shader_to_textures,
     ATLASMAP_OT_smart_unwrap_uv1,
+    ATLASMAP_OT_bake_ambient_occlusion,
     ATLASMAP_UL_material_textures,
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
     ATLASMAP_PT_ambient_occlusion_baking,
+    ATLASMAP_PT_ao_bake_advanced_settings,
     ATLASMAP_PT_uv1_unwrap_settings,
+    ATLASMAP_PT_uv1_unwrap_button,
 )
+
+
+def _ao_texture_size_preset_update(scene, context):
+    if scene.atlasmap_ao_texture_size_preset != "CUSTOM":
+        scene.atlasmap_ao_texture_size = int(scene.atlasmap_ao_texture_size_preset)
+
+
+def _ao_samples_preset_update(scene, context):
+    if scene.atlasmap_ao_samples_preset != "CUSTOM":
+        scene.atlasmap_ao_cycles_samples = int(scene.atlasmap_ao_samples_preset)
 
 
 def register():
@@ -422,6 +614,67 @@ def register():
         description="Scale UV islands to fill the UV square",
         default=False,
     )
+    bpy.types.Scene.atlasmap_ao_texture_size_preset = bpy.props.EnumProperty(
+        name="Texture Size Preset",
+        items=(
+            ("CUSTOM", "Custom", "Enter a custom texture size below"),
+            ("256", "256", "256 x 256 pixels"),
+            ("512", "512", "512 x 512 pixels"),
+            ("1024", "1024", "1024 x 1024 pixels"),
+            ("2048", "2048", "2048 x 2048 pixels"),
+            ("4096", "4096", "4096 x 4096 pixels"),
+        ),
+        default="1024",
+        update=_ao_texture_size_preset_update,
+    )
+    bpy.types.Scene.atlasmap_ao_texture_size = bpy.props.IntProperty(
+        name="Texture Size",
+        description="Bake image width and height; editable independently of the preset",
+        default=1024,
+        min=16,
+        max=16384,
+    )
+    bpy.types.Scene.atlasmap_ao_samples_preset = bpy.props.EnumProperty(
+        name="Cycles Samples Preset",
+        items=(
+            ("CUSTOM", "Custom", "Enter a custom sample count below"),
+            ("16", "16", "16 samples"),
+            ("32", "32", "32 samples"),
+            ("64", "64", "64 samples"),
+            ("128", "128", "128 samples"),
+            ("256", "256", "256 samples"),
+            ("512", "512", "512 samples"),
+        ),
+        default="64",
+        update=_ao_samples_preset_update,
+    )
+    bpy.types.Scene.atlasmap_ao_cycles_samples = bpy.props.IntProperty(
+        name="Cycles Samples",
+        description="Cycles samples used for the bake; editable independently of the preset",
+        default=64,
+        min=1,
+        max=65536,
+    )
+    bpy.types.Scene.atlasmap_ao_island_margin = bpy.props.FloatProperty(
+        name="Island Margin",
+        description="Bake edge padding as a fraction of the image size",
+        default=0.0,
+        min=0.0,
+        max=0.25,
+    )
+    bpy.types.Scene.atlasmap_ao_margin_type = bpy.props.EnumProperty(
+        name="Bake Margin Type",
+        items=(
+            ("EXTEND", "Extend", "Extend baked colors into the image margin"),
+            ("ADJACENT_FACES", "Adjacent Faces", "Fill the margin using adjacent mesh faces"),
+        ),
+        default="EXTEND",
+    )
+    bpy.types.Scene.atlasmap_ao_clear_image = bpy.props.BoolProperty(
+        name="Clear Image Before Bake",
+        description="Clear the target image before baking",
+        default=True,
+    )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
@@ -440,3 +693,10 @@ def unregister():
     del bpy.types.Scene.atlasmap_uv_area_weight
     del bpy.types.Scene.atlasmap_uv_correct_aspect
     del bpy.types.Scene.atlasmap_uv_scale_to_bounds
+    del bpy.types.Scene.atlasmap_ao_texture_size_preset
+    del bpy.types.Scene.atlasmap_ao_texture_size
+    del bpy.types.Scene.atlasmap_ao_samples_preset
+    del bpy.types.Scene.atlasmap_ao_cycles_samples
+    del bpy.types.Scene.atlasmap_ao_island_margin
+    del bpy.types.Scene.atlasmap_ao_margin_type
+    del bpy.types.Scene.atlasmap_ao_clear_image
