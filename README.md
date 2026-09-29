@@ -1,6 +1,6 @@
 # Hello Extension
 
-A minimal Blender 4.2+ extension starter. The extension adds an **AtlasMap** tab to the 3D View sidebar (`N` panel) with a button that reports a greeting.
+A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures.
 
 ## Install in Blender
 
@@ -8,6 +8,7 @@ A minimal Blender 4.2+ extension starter. The extension adds an **AtlasMap** tab
 2. Choose **Install from Disk** and select this extension's ZIP archive.
 3. Enable **Hello Extension** if Blender does not enable it automatically.
 4. In the 3D View, open the sidebar with `N` and choose the **AtlasMap** tab.
+5. Choose the texture width and height, then click **Convert Shader to Textures**. The generated image texture nodes are connected to the Principled BSDF inputs, and the images are packed into the current `.blend` file.
 
 ## Build a ZIP
 
@@ -22,8 +23,4 @@ Install the generated ZIP from `../hello_extension_dist` using **Install from Di
 
 Before publishing, replace the `maintainer` value in `blender_manifest.toml` and update the extension ID, name, and other metadata as needed.
 
-## Customize
-
-- Change the operator behavior in `__init__.py`.
-- Add classes to `_CLASSES`; keep registration in declaration order and unregistration in reverse order.
-- Keep extension metadata in `blender_manifest.toml`.
+The operator expects the three Principled BSDF inputs to contain unlinked values. It will not replace inputs that are already connected.

@@ -1,38 +1,92 @@
 import bpy
 
 
-class HELLOEXTENSION_OT_greet(bpy.types.Operator):
-    """Show a greeting in Blender's status area."""
+class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
+    """Create solid-color textures from the active material's Principled BSDF."""
 
-    bl_idname = "hello_extension.greet"
-    bl_label = "Say Hello"
+    bl_idname = "atlasmap.convert_shader_to_textures"
+    bl_label = "Convert Shader to Textures"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        self.report({"INFO"}, "Hello from your Blender extension!")
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+
+        principled = next(
+            (node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"),
+            None,
+        )
+        if principled is None:
+            self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
+            return {"CANCELLED"}
+
+        values = (
+            ("Base Color", "Base Color", principled.inputs["Base Color"].default_value[:]),
+            ("Metallic", "Metallic", principled.inputs["Metallic"].default_value),
+            ("Roughness", "Roughness", principled.inputs["Roughness"].default_value),
+        )
+        for _, socket_name, _ in values:
+            if principled.inputs[socket_name].is_linked:
+                self.report({"ERROR"}, f"Principled BSDF {socket_name} is already connected.")
+                return {"CANCELLED"}
+
+        texture_size = context.scene.atlasmap_texture_size
+        node_tree = material.node_tree
+        for index, (map_name, socket_name, value) in enumerate(values):
+            color = value if map_name == "Base Color" else (value, value, value, 1.0)
+            image = bpy.data.images.new(
+                name=f"{material.name}_{map_name.replace(' ', '')}",
+                width=texture_size,
+                height=texture_size,
+                alpha=True,
+                float_buffer=True,
+            )
+            image.colorspace_settings.name = "sRGB" if map_name == "Base Color" else "Non-Color"
+            image.pixels.foreach_set(color * (texture_size * texture_size))
+            image.pack()
+
+            texture_node = node_tree.nodes.new("ShaderNodeTexImage")
+            texture_node.image = image
+            texture_node.label = map_name
+            texture_node.location = (principled.location.x - 280, principled.location.y - index * 240)
+            node_tree.links.new(texture_node.outputs["Color"], principled.inputs[socket_name])
+
+        self.report({"INFO"}, f"Created three {texture_size}x{texture_size} textures.")
         return {"FINISHED"}
 
 
 class HELLOEXTENSION_PT_panel(bpy.types.Panel):
-    """A small example panel in the 3D View sidebar."""
+    """Controls for converting active material values into textures."""
 
-    bl_label = "Hello Extension"
+    bl_label = "AtlasMap"
     bl_idname = "HELLOEXTENSION_PT_panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "AtlasMap"
 
     def draw(self, context):
-        self.layout.operator(HELLOEXTENSION_OT_greet.bl_idname, icon="INFO")
+        layout = self.layout
+        layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
+        layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
 
 _CLASSES = (
-    HELLOEXTENSION_OT_greet,
+    ATLASMAP_OT_convert_shader_to_textures,
     HELLOEXTENSION_PT_panel,
 )
 
 
 def register():
+    bpy.types.Scene.atlasmap_texture_size = bpy.props.IntProperty(
+        name="Texture Size",
+        description="Width and height in pixels for each generated texture",
+        default=1024,
+        min=1,
+        max=8192,
+    )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
@@ -40,3 +94,4 @@ def register():
 def unregister():
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.atlasmap_texture_size
