@@ -24,29 +24,37 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             return {"CANCELLED"}
 
         values = (
-            ("Base Color", "Base Color", principled.inputs["Base Color"].default_value[:]),
-            ("Metallic", "Metallic", principled.inputs["Metallic"].default_value),
-            ("Roughness", "Roughness", principled.inputs["Roughness"].default_value),
+            ("Albedo", "_A", "Base Color", principled.inputs["Base Color"].default_value[:]),
+            ("Metallic", "_M", "Metallic", principled.inputs["Metallic"].default_value),
+            (
+                "Smoothness" if context.scene.atlasmap_convert_to_smoothness else "Roughness",
+                "_S" if context.scene.atlasmap_convert_to_smoothness else "_R",
+                "Roughness",
+                principled.inputs["Roughness"].default_value,
+            ),
         )
         texture_size = context.scene.atlasmap_texture_size
         node_tree = material.node_tree
         created_maps = []
         skipped_maps = []
-        for index, (map_name, socket_name, value) in enumerate(values):
+        smoothness_enabled = context.scene.atlasmap_convert_to_smoothness
+        for index, (map_name, suffix, socket_name, value) in enumerate(values):
             input_socket = principled.inputs[socket_name]
             if input_socket.is_linked:
                 skipped_maps.append(map_name)
                 continue
 
-            color = value if map_name == "Base Color" else (value, value, value, 1.0)
+            if socket_name == "Roughness" and smoothness_enabled:
+                value = 1.0 - value
+            color = value if socket_name == "Base Color" else (value, value, value, 1.0)
             image = bpy.data.images.new(
-                name=f"{material.name}_{map_name.replace(' ', '')}",
+                name=f"{material.name}{suffix}",
                 width=texture_size,
                 height=texture_size,
                 alpha=True,
                 float_buffer=True,
             )
-            image.colorspace_settings.name = "sRGB" if map_name == "Base Color" else "Non-Color"
+            image.colorspace_settings.name = "sRGB" if socket_name == "Base Color" else "Non-Color"
             image.pixels.foreach_set(color * (texture_size * texture_size))
             image.pack()
 
@@ -54,7 +62,18 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             texture_node.image = image
             texture_node.label = map_name
             texture_node.location = (principled.location.x - 560, principled.location.y - index * 360)
-            node_tree.links.new(texture_node.outputs["Color"], input_socket)
+            if socket_name == "Roughness" and smoothness_enabled:
+                invert_node = node_tree.nodes.new("ShaderNodeInvert")
+                invert_node.label = "Smoothness Invert"
+                invert_node.inputs["Fac"].default_value = 1.0
+                invert_node.location = (
+                    principled.location.x - 280,
+                    principled.location.y - index * 360,
+                )
+                node_tree.links.new(texture_node.outputs["Color"], invert_node.inputs["Color"])
+                node_tree.links.new(invert_node.outputs["Color"], input_socket)
+            else:
+                node_tree.links.new(texture_node.outputs["Color"], input_socket)
             created_maps.append(map_name)
 
         normal_input = principled.inputs["Normal"]
@@ -63,7 +82,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
         else:
             normal_color = (0.5, 0.5, 1.0, 1.0)
             normal_image = bpy.data.images.new(
-                name=f"{material.name}_Normal",
+                name=f"{material.name}_N",
                 width=texture_size,
                 height=texture_size,
                 alpha=True,
@@ -130,6 +149,7 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
+        layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Convert Roughness to Smoothness")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
         layout.separator()
@@ -174,6 +194,11 @@ def register():
         max=8192,
     )
     bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.atlasmap_convert_to_smoothness = bpy.props.BoolProperty(
+        name="Convert Roughness to Smoothness",
+        description="Generate an inverted smoothness texture and invert it again for the Principled BSDF",
+        default=False,
+    )
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
@@ -182,4 +207,5 @@ def unregister():
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.atlasmap_texture_index
+    del bpy.types.Scene.atlasmap_convert_to_smoothness
     del bpy.types.Scene.atlasmap_texture_size
