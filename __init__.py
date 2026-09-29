@@ -2,6 +2,12 @@ import bpy
 import numpy as np
 
 
+def _resolve_resample_method(method, scale_factor):
+    if method == "AUTO":
+        return "BICUBIC" if scale_factor > 1.0 else "LANCZOS"
+    return method
+
+
 def _resample_kernel(distance, method):
     distance = np.abs(distance)
     if method == "BILINEAR":
@@ -443,16 +449,20 @@ class ATLASMAP_OT_resample_selected_texture(bpy.types.Operator):
             self.report({"ERROR"}, "The selected texture image has no pixel data loaded.")
             return {"CANCELLED"}
         try:
+            method = _resolve_resample_method(
+                context.scene.atlasmap_resample_method,
+                context.scene.atlasmap_resample_factor,
+            )
             width, height = _resample_image(
                 image,
                 context.scene.atlasmap_resample_factor,
-                context.scene.atlasmap_resample_method,
+                method,
             )
         except (RuntimeError, ValueError) as error:
             self.report({"ERROR"}, f"Texture resampling failed: {error}")
             return {"CANCELLED"}
 
-        self.report({"INFO"}, f"Resampled {image.name} to {width} x {height}.")
+        self.report({"INFO"}, f"Resampled {image.name} to {width} x {height} using {method.title()}.")
         return {"FINISHED"}
 
 
@@ -752,12 +762,13 @@ def register():
     bpy.types.Scene.atlasmap_resample_method = bpy.props.EnumProperty(
         name="Resample Method",
         items=(
-            ("NEAREST", "Nearest", "Nearest-neighbor sampling"),
-            ("BILINEAR", "Bilinear", "Linear interpolation"),
-            ("BICUBIC", "Bicubic", "Cubic interpolation"),
-            ("LANCZOS", "Lanczos", "Lanczos windowed-sinc interpolation"),
+            ("AUTO", "Auto", "Automatically uses Lanczos if downsampling, and Bicubic if upsampling"),
+            ("NEAREST", "Nearest", "Sharp/Pixel art."),
+            ("BILINEAR", "Bilinear", "Fast, standard linear blending."),
+            ("BICUBIC", "Bicubic", "Smooth gradients (great for upsampling)."),
+            ("LANCZOS", "Lanczos", "Sharp detail preservation (great for downsampling)."),
         ),
-        default="BICUBIC",
+        default="AUTO",
     )
     bpy.types.Scene.atlasmap_convert_to_smoothness = bpy.props.BoolProperty(
         name="Smoothness",
