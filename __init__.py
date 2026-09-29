@@ -132,20 +132,12 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
                     invert_node.label = "Smoothness Invert"
                     invert_node.inputs["Fac"].default_value = 1.0
                     invert_node.location = (
-                        principled.location.x - 560,
-                        packed_texture.location.y - 360,
-                    )
-                    node_tree.links.new(packed_texture.outputs["Color"], invert_node.inputs["Color"])
-                    inverted_channels = node_tree.nodes.new("ShaderNodeSeparateColor")
-                    inverted_channels.mode = "RGB"
-                    inverted_channels.label = "Roughness Channel"
-                    inverted_channels.location = (
                         principled.location.x - 280,
                         packed_texture.location.y - 360,
                     )
-                    node_tree.links.new(invert_node.outputs["Color"], inverted_channels.inputs["Color"])
+                    node_tree.links.new(separate_color.outputs["Blue"], invert_node.inputs["Color"])
                     if not roughness_input.is_linked:
-                        node_tree.links.new(inverted_channels.outputs["Blue"], roughness_input)
+                        node_tree.links.new(invert_node.outputs["Color"], roughness_input)
                 elif not roughness_input.is_linked:
                     node_tree.links.new(separate_color.outputs["Blue"], roughness_input)
                 created_maps.append("MOS")
@@ -224,14 +216,14 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Generated Texture Settings", icon="TEXTURE")
+        layout.label(text="Generate Textures", icon="TEXTURE")
         layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
         layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Smoothness")
         layout.prop(context.scene, "atlasmap_channel_pack", text="Channel Pack")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
         layout.separator()
-        layout.label(text="Active Material Textures", icon="IMAGE_DATA")
+        layout.label(text="Normalize Textures", icon="IMAGE_DATA")
         obj = context.active_object
         material = obj.active_material if obj else None
         if material and material.use_nodes and any(
@@ -254,6 +246,9 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
             )
         else:
             layout.label(text="No image textures found", icon="INFO")
+
+        layout.separator()
+        layout.label(text="Ambient Occlusion Baking", icon="RENDER_STILL")
 
 
 _CLASSES = (
