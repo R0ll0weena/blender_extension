@@ -23,21 +23,27 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
             return {"CANCELLED"}
 
-        values = (
+        smoothness_enabled = context.scene.atlasmap_convert_to_smoothness
+        channel_pack_enabled = context.scene.atlasmap_channel_pack
+        values = [
             ("Albedo", "_A", "Base Color", principled.inputs["Base Color"].default_value[:]),
-            ("Metallic", "_M", "Metallic", principled.inputs["Metallic"].default_value),
-            (
-                "Smoothness" if context.scene.atlasmap_convert_to_smoothness else "Roughness",
-                "_S" if context.scene.atlasmap_convert_to_smoothness else "_R",
-                "Roughness",
-                principled.inputs["Roughness"].default_value,
-            ),
-        )
+        ]
+        if not channel_pack_enabled:
+            values.extend(
+                (
+                    ("Metallic", "_M", "Metallic", principled.inputs["Metallic"].default_value),
+                    (
+                        "Smoothness" if smoothness_enabled else "Roughness",
+                        "_S" if smoothness_enabled else "_R",
+                        "Roughness",
+                        principled.inputs["Roughness"].default_value,
+                    ),
+                )
+            )
         texture_size = context.scene.atlasmap_texture_size
         node_tree = material.node_tree
         created_maps = []
         skipped_maps = []
-        smoothness_enabled = context.scene.atlasmap_convert_to_smoothness
         for index, (map_name, suffix, socket_name, value) in enumerate(values):
             input_socket = principled.inputs[socket_name]
             if input_socket.is_linked:
@@ -76,10 +82,80 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
                 node_tree.links.new(texture_node.outputs["Color"], input_socket)
             created_maps.append(map_name)
 
+        mos_created = False
+        if channel_pack_enabled:
+            metallic_input = principled.inputs["Metallic"]
+            roughness_input = principled.inputs["Roughness"]
+            if metallic_input.is_linked:
+                skipped_maps.append("Metallic")
+            if roughness_input.is_linked:
+                skipped_maps.append("Smoothness" if smoothness_enabled else "Roughness")
+
+            if not metallic_input.is_linked or not roughness_input.is_linked:
+                metallic_value = metallic_input.default_value
+                roughness_value = roughness_input.default_value
+                packed_blue = 1.0 - roughness_value if smoothness_enabled else roughness_value
+                packed_image = bpy.data.images.new(
+                    name=f"{material.name}_MOS",
+                    width=texture_size,
+                    height=texture_size,
+                    alpha=True,
+                    float_buffer=True,
+                )
+                packed_image.colorspace_settings.name = "Non-Color"
+                packed_image.pixels.foreach_set(
+                    (metallic_value, 0.0, packed_blue, 1.0) * (texture_size * texture_size)
+                )
+                packed_image.pack()
+
+                packed_texture = node_tree.nodes.new("ShaderNodeTexImage")
+                packed_texture.image = packed_image
+                packed_texture.label = "Metallic / Smoothness" if smoothness_enabled else "Metallic / Roughness"
+                packed_texture.location = (
+                    principled.location.x - 560,
+                    principled.location.y - len(values) * 360,
+                )
+
+                separate_color = node_tree.nodes.new("ShaderNodeSeparateColor")
+                separate_color.mode = "RGB"
+                separate_color.label = "MOS Channels"
+                separate_color.location = (
+                    principled.location.x - 280,
+                    packed_texture.location.y,
+                )
+                node_tree.links.new(packed_texture.outputs["Color"], separate_color.inputs["Color"])
+                if not metallic_input.is_linked:
+                    node_tree.links.new(separate_color.outputs["Red"], metallic_input)
+
+                if smoothness_enabled:
+                    invert_node = node_tree.nodes.new("ShaderNodeInvert")
+                    invert_node.label = "Smoothness Invert"
+                    invert_node.inputs["Fac"].default_value = 1.0
+                    invert_node.location = (
+                        principled.location.x - 560,
+                        packed_texture.location.y - 360,
+                    )
+                    node_tree.links.new(packed_texture.outputs["Color"], invert_node.inputs["Color"])
+                    inverted_channels = node_tree.nodes.new("ShaderNodeSeparateColor")
+                    inverted_channels.mode = "RGB"
+                    inverted_channels.label = "Roughness Channel"
+                    inverted_channels.location = (
+                        principled.location.x - 280,
+                        packed_texture.location.y - 360,
+                    )
+                    node_tree.links.new(invert_node.outputs["Color"], inverted_channels.inputs["Color"])
+                    if not roughness_input.is_linked:
+                        node_tree.links.new(inverted_channels.outputs["Blue"], roughness_input)
+                elif not roughness_input.is_linked:
+                    node_tree.links.new(separate_color.outputs["Blue"], roughness_input)
+                created_maps.append("MOS")
+                mos_created = True
+
         normal_input = principled.inputs["Normal"]
         if normal_input.is_linked:
             skipped_maps.append("Normal")
         else:
+            normal_row = len(values) + (2 if mos_created and smoothness_enabled else int(mos_created))
             normal_color = (0.5, 0.5, 1.0, 1.0)
             normal_image = bpy.data.images.new(
                 name=f"{material.name}_N",
@@ -97,7 +173,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             normal_texture.label = "Normal"
             normal_texture.location = (
                 principled.location.x - 560,
-                principled.location.y - len(values) * 360,
+                principled.location.y - normal_row * 360,
             )
 
             normal_map = node_tree.nodes.new("ShaderNodeNormalMap")
@@ -105,7 +181,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             normal_map.space = "TANGENT"
             normal_map.location = (
                 principled.location.x - 280,
-                principled.location.y - len(values) * 360,
+                principled.location.y - normal_row * 360,
             )
             node_tree.links.new(normal_texture.outputs["Color"], normal_map.inputs["Color"])
             node_tree.links.new(normal_map.outputs["Normal"], normal_input)
@@ -148,8 +224,10 @@ class HELLOEXTENSION_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.label(text="Generated Texture Settings", icon="TEXTURE")
         layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
-        layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Convert Roughness to Smoothness")
+        layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Smoothness")
+        layout.prop(context.scene, "atlasmap_channel_pack", text="Channel Pack")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
 
         layout.separator()
@@ -195,8 +273,13 @@ def register():
     )
     bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0)
     bpy.types.Scene.atlasmap_convert_to_smoothness = bpy.props.BoolProperty(
-        name="Convert Roughness to Smoothness",
+        name="Smoothness",
         description="Generate an inverted smoothness texture and invert it again for the Principled BSDF",
+        default=False,
+    )
+    bpy.types.Scene.atlasmap_channel_pack = bpy.props.BoolProperty(
+        name="Channel Pack",
+        description="Pack metallic into red and roughness or smoothness into blue of a single MOS texture",
         default=False,
     )
     for cls in _CLASSES:
@@ -208,4 +291,5 @@ def unregister():
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.atlasmap_texture_index
     del bpy.types.Scene.atlasmap_convert_to_smoothness
+    del bpy.types.Scene.atlasmap_channel_pack
     del bpy.types.Scene.atlasmap_texture_size

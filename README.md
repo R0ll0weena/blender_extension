@@ -1,6 +1,6 @@
 # Hello Extension
 
-A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures, and adds a neutral normal map.
+A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures, and adds a neutral normal map. Generated textures use `_A` for albedo, `_M` for metallic, `_R` for roughness, `_N` for normal, or `_S` for smoothness.
 
 ## Install in Blender
 
@@ -8,7 +8,8 @@ A Blender 4.2+ extension that converts an active material's Principled BSDF Base
 2. Choose **Install from Disk** and select this extension's ZIP archive.
 3. Enable **Hello Extension** if Blender does not enable it automatically.
 4. In the 3D View, open the sidebar with `N` and choose the **AtlasMap** tab.
-5. Choose the texture width and height, then click **Convert Shader to Textures**. The generated image texture nodes are connected to the Principled BSDF inputs, and the images are packed into the current `.blend` file.
+5. Set the options under **Generated Texture Settings**, then click **Convert Shader to Textures**. Enable **Smoothness** to generate an inverted smoothness map instead of roughness. Enable **Channel Pack** to put metallic in the red channel and roughness or smoothness in the blue channel of one `_MOS` texture. The generated images are packed into the current `.blend` file.
+6. The panel lists image textures in the active material in a scrollable list, with **Name** and **Size** columns.
 
 ## Build a ZIP
 
