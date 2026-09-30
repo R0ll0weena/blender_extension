@@ -48,6 +48,11 @@ def _resample_axis(pixels, target_size, axis, method):
     return np.moveaxis(result, 0, axis)
 
 
+def resample_pixels(pixels, width, height, method):
+    pixels = _resample_axis(pixels, width, 1, method)
+    return _resample_axis(pixels, height, 0, method)
+
+
 def resample_image(image, scale_factor, method):
     source_width, source_height = image.size[:]
     target_width = max(1, round(source_width * scale_factor))

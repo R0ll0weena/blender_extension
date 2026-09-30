@@ -6,6 +6,7 @@ from ..operators.ambient_occlusion import ATLASMAP_OT_bake_ambient_occlusion
 from ..operators.atlasmap import ATLASMAP_OT_combine_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
 from ..operators.resample import ATLASMAP_OT_resample_selected_texture
+from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos
 from ..operators.unwrap import ATLASMAP_OT_smart_unwrap_uv1
 
 
@@ -24,6 +25,10 @@ class ATLASMAP_PT_generate_textures(bpy.types.Panel):
         layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Smoothness")
         layout.prop(context.scene, "atlasmap_channel_pack", text="Channel Pack")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
+        layout.separator()
+        layout.operator(ATLASMAP_OT_pack_mos.bl_idname)
+        layout.operator(ATLASMAP_OT_unpack_mos.bl_idname)
+        layout.operator(ATLASMAP_OT_switch_smoothness_roughness.bl_idname)
 
 
 class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
