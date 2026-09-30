@@ -3,6 +3,7 @@
 import bpy
 
 from ..utils.material_graph import create_albedo_texture
+from ..utils.node_layout import arrange_material_nodes
 
 
 class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
@@ -122,6 +123,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             node_tree.links.new(normal_map.outputs["Normal"], normal_input)
             created_maps.append("Normal")
 
+        arrange_material_nodes(material)
         message = f"Created {len(created_maps)} texture(s) at {texture_size}x{texture_size}: {', '.join(created_maps)}." if created_maps else "No textures created; all supported inputs are already connected."
         if skipped_maps:
             message += f" Skipped connected inputs: {', '.join(skipped_maps)}."

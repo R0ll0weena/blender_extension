@@ -3,6 +3,7 @@
 import bpy
 
 from ..utils.material_graph import setup_ao_material_graph
+from ..utils.node_layout import arrange_material_nodes
 
 
 class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
@@ -124,5 +125,6 @@ class ATLASMAP_OT_bake_ambient_occlusion(bpy.types.Operator):
             principled = next((node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
             if principled is not None:
                 setup_ao_material_graph(material, principled, image, ao_node, scene.atlasmap_texture_size, obj.data.uv_layers[1].name)
+                arrange_material_nodes(material)
         self.report({"INFO"}, f"Ambient occlusion baked to {image.name} ({resolution}px, {samples} samples).")
         return {"FINISHED"}

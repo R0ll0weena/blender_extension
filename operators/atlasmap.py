@@ -6,6 +6,7 @@ import bpy
 
 from ..utils.atlas_images import compose_atlas, create_packed_image
 from ..utils.atlas_layout import initial_atlas_size, pack_materials
+from ..utils.node_layout import arrange_material_nodes
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ def _build_combined_material(name, images, category):
             links.new(invert.outputs["Color"], principled.inputs["Roughness"])
         else:
             links.new(texture.outputs["Color"], principled.inputs["Roughness"])
+    arrange_material_nodes(material)
     return material
 
 
