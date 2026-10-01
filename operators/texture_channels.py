@@ -285,9 +285,65 @@ class ATLASMAP_OT_unpack_mos(bpy.types.Operator):
 
 class ATLASMAP_OT_switch_smoothness_roughness(bpy.types.Operator):
     bl_idname = "atlasmap.switch_smoothness_roughness"
-    bl_label = "Convert Smoothness/Roughness"
+    bl_label = "Convert S/R"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        self.report({"INFO"}, "Convert Smoothness/Roughness is not implemented yet.")
-        return {"CANCELLED"}
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+        node_tree = material.node_tree
+        principled = next((node for node in node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
+        if principled is None:
+            self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
+            return {"CANCELLED"}
+
+        # Smoothness is TEX_IMAGE/MOS blue -> Invert -> Roughness; roughness is linked directly.
+        roughness_input = principled.inputs["Roughness"]
+        link = roughness_input.links[0] if roughness_input.links else None
+        invert = link.from_node if link and link.from_node.type == "INVERT" else None
+        if invert is not None:
+            source_socket = invert.inputs["Color"].links[0].from_socket if invert.inputs["Color"].links else None
+        else:
+            source_socket = link.from_socket if link else None
+        source = source_socket.node if source_socket else None
+        mos_node = _direct_texture(source.inputs["Color"]) if source and source.type == "SEPARATE_COLOR" and source_socket.name == "Blue" else None
+        if source is not None and source.type == "TEX_IMAGE" and source.image is not None:
+            image, channels = source.image, slice(0, 3)
+        elif mos_node is not None:
+            image, channels = mos_node.image, slice(2, 3)
+        else:
+            self.report({"INFO"}, "No Roughness/Smoothness texture found.")
+            return {"CANCELLED"}
+        if 0 in image.size[:]:
+            self.report({"ERROR"}, f"Image has no pixel data: {image.name}.")
+            return {"CANCELLED"}
+
+        pixels = image_to_array(image)
+        pixels[..., channels] = 1.0 - pixels[..., channels]
+        image.pixels.foreach_set(pixels.ravel())
+        image.pack()
+
+        to_smoothness = invert is None
+        from_name, to_name = ("Roughness", "Smoothness") if to_smoothness else ("Smoothness", "Roughness")
+        if mos_node is None:
+            if image.name.endswith(f"_{from_name[0]}"):
+                image.name = f"{image.name[:-2]}_{to_name[0]}"
+            source.label = to_name
+
+        links = node_tree.links
+        if to_smoothness:
+            invert = node_tree.nodes.new("ShaderNodeInvert")
+            invert.label = "Smoothness Invert"
+            invert.inputs["Fac"].default_value = 1.0
+            links.new(source_socket, invert.inputs["Color"])
+            links.new(invert.outputs["Color"], roughness_input)
+        else:
+            node_tree.nodes.remove(invert)
+            links.new(source_socket, roughness_input)
+
+        arrange_material_nodes(material)
+        self.report({"INFO"}, f"Converted {from_name} to {to_name} in {image.name}.")
+        return {"FINISHED"}

@@ -10,13 +10,14 @@ def image_to_array(image):
     return values.reshape((image.size[1], image.size[0], 4))
 
 
-def compose_atlas(materials, placements, width, height, category, background_color):
+def compose_atlas(sources, placements, width, height, category, background_color):
     atlas = np.empty((height, width, 4), dtype=np.float32)
     atlas[:, :] = np.asarray(background_color, dtype=np.float32)
-    for material in materials:
-        placement = placements[material]
-        source = image_to_array(material.maps[category].image)
-        atlas[placement.y:placement.y + placement.height, placement.x:placement.x + placement.width] = source
+    for source in sources:
+        placement = placements[source]
+        # Placements use a top-left origin; Blender pixel rows start at the bottom.
+        row = height - placement.y - placement.height
+        atlas[row:row + placement.height, placement.x:placement.x + placement.width] = source.maps[category]
     return atlas
 
 

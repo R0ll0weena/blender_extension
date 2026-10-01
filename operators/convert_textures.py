@@ -8,7 +8,7 @@ from ..utils.node_layout import arrange_material_nodes
 
 class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
     bl_idname = "atlasmap.convert_shader_to_textures"
-    bl_label = "Convert Shader to Textures"
+    bl_label = "Shader to Textures"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

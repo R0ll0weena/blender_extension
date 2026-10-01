@@ -28,9 +28,9 @@ def register_properties():
         name="Maximum Atlas Map Size", description="Maximum width or height of the generated material atlas",
         default=4096, min=16, max=16384,
     )
-    bpy.types.Scene.atlasmap_atlas_margin = bpy.props.FloatProperty(
-        name="Atlas Margin", description="Spacing between packed material regions as a fraction of the atlas",
-        default=0.01, min=0.0, max=0.25, precision=3,
+    bpy.types.Scene.atlasmap_atlas_margin = bpy.props.IntProperty(
+        name="Atlas Margin", description="Minimum gap in pixels between packed textures",
+        default=4, min=0, max=256,
     )
     bpy.types.Scene.atlasmap_background_color = bpy.props.FloatVectorProperty(
         name="Background Color", description="RGBA color used for unoccupied atlas pixels",

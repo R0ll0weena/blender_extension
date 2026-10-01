@@ -1,5 +1,6 @@
 """Boolean-grid atlas layout helpers."""
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -7,6 +8,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class AtlasPlacement:
+    """Texture region in the atlas, with a top-left origin."""
     material: object
     x: int
     y: int
@@ -18,17 +20,19 @@ def next_power_of_two(value):
     return 1 if value <= 1 else 2 ** (value - 1).bit_length()
 
 
-def initial_atlas_size(materials, category_names):
-    category_areas = {category: 0 for category in category_names}
-    for material in materials:
-        for category in category_names:
-            image = material.maps[category]
-            category_areas[category] += image.size[0] * image.size[1]
-    return max(next_power_of_two(area) for area in category_areas.values())
+def initial_atlas_size(sources):
+    """Return the first size in the growth sequence (1x1, 2x1, 2x2, 4x2, ...) whose area holds all textures.
+
+    Margins are left out because they are clipped at the atlas edges; packing grows the atlas if they don't fit.
+    """
+    area = sum(source.width * source.height for source in sources)
+    side = next_power_of_two(math.ceil(math.sqrt(area)))
+    return (side, side // 2) if side > 1 and side * (side // 2) >= area else (side, side)
 
 
 def candidate_sizes(start_size, maximum_size):
-    width = height = start_size
+    """Grow one side at a time by a factor of 2: 256x256, 512x256, 512x512, ..."""
+    width, height = start_size
     while width <= maximum_size and height <= maximum_size:
         yield width, height
         if width == height:
@@ -37,33 +41,43 @@ def candidate_sizes(start_size, maximum_size):
             height *= 2
 
 
-def pack_materials(materials, start_size, maximum_size, margin_pixels, step):
-    ordered = sorted(
-        materials,
-        key=lambda material: max(tuple(material.maps[category].size) for category in material.maps),
-        reverse=True,
-    )
-    for atlas_width, atlas_height in candidate_sizes(start_size, maximum_size):
-        occupied = np.zeros((atlas_height, atlas_width), dtype=np.bool_)
-        placements = {}
-        valid = True
-        for material in ordered:
-            width, height = material.maps["Albedo"].size
-            padded_width = width + margin_pixels * 2
-            padded_height = height + margin_pixels * 2
-            found = None
-            for y in range(0, atlas_height - padded_height + 1, max(1, step)):
-                for x in range(0, atlas_width - padded_width + 1, max(1, step)):
-                    if not occupied[y:y + padded_height, x:x + padded_width].any():
-                        occupied[y:y + padded_height, x:x + padded_width] = True
-                        found = (x + margin_pixels, y + margin_pixels)
-                        break
-                if found is not None:
-                    break
-            if found is None:
-                valid = False
+def _try_pack(ordered, atlas_width, atlas_height, margin):
+    """Place each texture at the first free candidate corner, top-to-bottom then left-to-right.
+
+    Candidates are (0, 0) plus the right and bottom edges (+ margin) of every placed texture. Each texture
+    reserves its size plus the margin to the right and below (clipped at the atlas edge) in the bool array.
+    """
+    occupied = np.zeros((atlas_height, atlas_width), dtype=np.bool_)
+    xs, ys = {0}, {0}
+    placements = {}
+    for source in ordered:
+        width, height = source.width, source.height
+        found = None
+        for y in sorted(ys):
+            if y + height > atlas_height:
                 break
-            placements[material] = AtlasPlacement(material, found[0], found[1], width, height)
-        if valid:
+            for x in sorted(xs):
+                if x + width > atlas_width:
+                    break
+                if not occupied[y:y + height + margin, x:x + width + margin].any():
+                    found = (x, y)
+                    break
+            if found is not None:
+                break
+        if found is None:
+            return None
+        x, y = found
+        occupied[y:y + height + margin, x:x + width + margin] = True
+        xs.add(x + width + margin)
+        ys.add(y + height + margin)
+        placements[source] = AtlasPlacement(source.material, x, y, width, height)
+    return placements
+
+
+def pack_materials(sources, start_size, maximum_size, margin):
+    ordered = sorted(sources, key=lambda source: (max(source.width, source.height), source.width * source.height), reverse=True)
+    for atlas_width, atlas_height in candidate_sizes(start_size, maximum_size):
+        placements = _try_pack(ordered, atlas_width, atlas_height, margin)
+        if placements is not None:
             return atlas_width, atlas_height, placements
-    raise ValueError(f"Textures do not fit within the maximum atlas size of {maximum_size}.")
+    raise ValueError(f"Textures need a larger atlas than the maximum size {maximum_size}.")
