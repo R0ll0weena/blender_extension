@@ -1,4 +1,4 @@
-# Hello Extension
+# Blender Atlasmap Extension
 
 A Blender 4.2+ extension that converts an active material's Principled BSDF Base Color, Metallic, and Roughness values into packed, solid-color image textures, and adds a neutral normal map. Generated textures use `_A` for albedo, `_M` for metallic, `_R` for roughness, `_N` for normal, or `_S` for smoothness.
 
