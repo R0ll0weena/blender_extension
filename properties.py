@@ -3,12 +3,32 @@
 import bpy
 
 
+def _show_selected_texture(scene, context):
+    """Show the texture selected in the Scale Textures list in every open, unpinned Image/UV editor."""
+    obj = context.active_object
+    material = obj.active_material if obj else None
+    if material is None or not material.use_nodes:
+        return
+    nodes = material.node_tree.nodes
+    if not 0 <= scene.atlasmap_texture_index < len(nodes):
+        return
+    node = nodes[scene.atlasmap_texture_index]
+    if node.type != "TEX_IMAGE" or node.image is None:
+        return
+    # In Edit mode the UV editor follows the active texture node, so make it match.
+    nodes.active = node
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "IMAGE_EDITOR" and not area.spaces.active.use_image_pin:
+                area.spaces.active.image = node.image
+
+
 def register_properties():
     bpy.types.Scene.atlasmap_texture_size = bpy.props.IntProperty(
         name="Texture Size", description="Width and height in pixels for each generated texture",
         default=1024, min=1, max=8192,
     )
-    bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0, update=_show_selected_texture)
     bpy.types.Scene.atlasmap_resample_factor = bpy.props.FloatProperty(
         name="Rescale Factor", description="Scale the selected image's width and height by this factor",
         default=0.5, min=0.01, max=16.0, precision=2,
