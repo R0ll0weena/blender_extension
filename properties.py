@@ -24,13 +24,21 @@ def _show_selected_texture(scene, context):
 
 
 def register_properties():
+    # Combine Materials / Resample Textures progress (runtime only; window-manager data is not saved in the .blend).
+    bpy.types.WindowManager.atlasmap_progress_task = bpy.props.StringProperty()
+    bpy.types.WindowManager.atlasmap_progress_running = bpy.props.BoolProperty(default=False)
+    bpy.types.WindowManager.atlasmap_progress = bpy.props.FloatProperty(default=0.0, min=0.0, max=1.0)
+    bpy.types.WindowManager.atlasmap_progress_text = bpy.props.StringProperty()
     bpy.types.Scene.atlasmap_texture_size = bpy.props.IntProperty(
         name="Texture Size", description="Width and height in pixels for each generated texture",
         default=1024, min=1, max=8192,
     )
     bpy.types.Scene.atlasmap_texture_index = bpy.props.IntProperty(default=0, update=_show_selected_texture)
+    bpy.types.ShaderNodeTexImage.atlasmap_resample_selected = bpy.props.BoolProperty(
+        name="Resample", description="Include this texture when resampling", default=False,
+    )
     bpy.types.Scene.atlasmap_resample_factor = bpy.props.FloatProperty(
-        name="Rescale Factor", description="Scale the selected image's width and height by this factor",
+        name="Rescale Factor", description="Scale the selected images' width and height by this factor",
         default=0.5, min=0.01, max=16.0, precision=2,
     )
     bpy.types.Scene.atlasmap_resample_method = bpy.props.EnumProperty(
@@ -117,3 +125,6 @@ def unregister_properties():
     )
     for name in names:
         delattr(bpy.types.Scene, name)
+    del bpy.types.ShaderNodeTexImage.atlasmap_resample_selected
+    for name in ("atlasmap_progress_task", "atlasmap_progress_running", "atlasmap_progress", "atlasmap_progress_text"):
+        delattr(bpy.types.WindowManager, name)

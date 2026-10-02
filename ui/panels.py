@@ -6,7 +6,7 @@ from ..operators.ambient_occlusion import ATLASMAP_OT_bake_ambient_occlusion
 from ..operators.atlasmap import ATLASMAP_OT_combine_materials
 from ..operators.color_mapper import ATLASMAP_OT_atlas_to_simple_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
-from ..operators.resample import ATLASMAP_OT_resample_selected_texture
+from ..operators.resample import ATLASMAP_OT_resample_selected_texture, selected_texture_images
 from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos
 from ..operators.unwrap import ATLASMAP_OT_smart_unwrap_uv1
 
@@ -18,11 +18,15 @@ class ATLASMAP_PT_generate_textures(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "AtlasMap"
     bl_order = 0
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = self.layout
-        layout.prop(context.scene, "atlasmap_texture_size", text="Texture Size")
+        layout.prop(context.scene, "atlasmap_texture_size", text="Texture Tile Size")
+        if context.scene.atlasmap_texture_size >= 128:
+            warning = layout.column(align=True)
+            warning.alert = True
+            warning.label(text="128 px or more is unnecessary for solid colors.", icon="ERROR")
+            warning.label(text="Smaller tiles save atlas space without losing quality.")
         layout.prop(context.scene, "atlasmap_convert_to_smoothness", text="Smoothness")
         layout.prop(context.scene, "atlasmap_channel_pack", text="Channel Pack")
         layout.operator(ATLASMAP_OT_convert_shader_to_textures.bl_idname, icon="TEXTURE")
@@ -39,7 +43,6 @@ class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "AtlasMap"
     bl_order = 2
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = self.layout
@@ -55,7 +58,13 @@ class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
             layout.label(text="No image textures found", icon="INFO")
         layout.prop(context.scene, "atlasmap_resample_factor", text="Rescale Factor")
         layout.prop(context.scene, "atlasmap_resample_method", text="Resample Method")
-        layout.operator(ATLASMAP_OT_resample_selected_texture.bl_idname, icon="IMAGE")
+        wm = context.window_manager
+        if wm.atlasmap_progress_running and wm.atlasmap_progress_task == "RESAMPLE":
+            layout.progress(factor=wm.atlasmap_progress, type="BAR", text=wm.atlasmap_progress_text)
+            layout.label(text="Press Esc to cancel; finished textures stay resampled.", icon="CANCEL")
+        else:
+            count = len(selected_texture_images(context.scene, material))
+            layout.operator(ATLASMAP_OT_resample_selected_texture.bl_idname, text=f"Resample Textures ({count})", icon="IMAGE")
 
 
 class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
@@ -65,7 +74,6 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "AtlasMap"
     bl_order = 3
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = self.layout
@@ -95,14 +103,28 @@ class ATLASMAP_PT_generate_atlasmap(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "AtlasMap"
     bl_order = 4
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = self.layout
         layout.prop(context.scene, "atlasmap_maximum_size", text="Maximum Atlas Map Size")
         layout.prop(context.scene, "atlasmap_atlas_margin", text="Atlas Margin")
         layout.prop(context.scene, "atlasmap_background_color", text="Background Color")
-        layout.operator(ATLASMAP_OT_combine_materials.bl_idname, icon="MATERIAL")
+        wm = context.window_manager
+        if wm.atlasmap_progress_running and wm.atlasmap_progress_task == "COMBINE":
+            layout.progress(factor=wm.atlasmap_progress, type="BAR", text=wm.atlasmap_progress_text)
+            layout.label(text="Press Esc to cancel and restore the previous state.", icon="CANCEL")
+        else:
+            layout.operator(ATLASMAP_OT_combine_materials.bl_idname, icon="MATERIAL")
+            layout.label(text="Large textures or downsampling can take minutes.", icon="TIME")
+
+
+def draw_status_progress(self, context):
+    """Status bar progress for Combine Materials, visible even with the AtlasMap panel closed."""
+    wm = context.window_manager
+    if wm.atlasmap_progress_running:
+        row = self.layout.row()
+        row.progress(factor=wm.atlasmap_progress, type="BAR", text=wm.atlasmap_progress_text)
+        row.label(text="Esc to cancel")
 
 
 class ATLASMAP_PT_color_mapper(bpy.types.Panel):
@@ -112,7 +134,6 @@ class ATLASMAP_PT_color_mapper(bpy.types.Panel):
     bl_region_type = "UI"
     bl_category = "AtlasMap"
     bl_order = 5
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         self.layout.operator(ATLASMAP_OT_atlas_to_simple_materials.bl_idname, icon="COLOR")

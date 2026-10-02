@@ -6,6 +6,7 @@ from .panels import (
     ATLASMAP_PT_generate_atlasmap,
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
+    draw_status_progress,
 )
 from .lists import ATLASMAP_UL_material_textures
 
