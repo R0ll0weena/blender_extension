@@ -3,7 +3,7 @@
 import bpy
 
 from ..operators.ambient_occlusion import ATLASMAP_OT_bake_ambient_occlusion
-from ..operators.atlasmap import ATLASMAP_OT_combine_materials
+from ..operators.atlasmap import ATLASMAP_OT_combine_materials, ATLASMAP_OT_combine_shared_materials
 from ..operators.color_mapper import ATLASMAP_OT_atlas_to_simple_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
 from ..operators.resample import ATLASMAP_OT_resample_selected_texture, selected_texture_images
@@ -114,12 +114,12 @@ class ATLASMAP_PT_generate_atlasmap(bpy.types.Panel):
             layout.progress(factor=wm.atlasmap_progress, type="BAR", text=wm.atlasmap_progress_text)
             layout.label(text="Press Esc to cancel and restore the previous state.", icon="CANCEL")
         else:
-            layout.operator(ATLASMAP_OT_combine_materials.bl_idname, icon="MATERIAL")
-            layout.label(text="Large textures or downsampling can take minutes.", icon="TIME")
+            layout.operator(ATLASMAP_OT_combine_materials.bl_idname)
+            layout.operator(ATLASMAP_OT_combine_shared_materials.bl_idname)
 
 
 def draw_status_progress(self, context):
-    """Status bar progress for Combine Materials, visible even with the AtlasMap panel closed."""
+    """Status bar progress for atlas generation and resampling, visible even with the AtlasMap panel closed."""
     wm = context.window_manager
     if wm.atlasmap_progress_running:
         row = self.layout.row()
@@ -136,4 +136,5 @@ class ATLASMAP_PT_color_mapper(bpy.types.Panel):
     bl_order = 5
 
     def draw(self, context):
+        self.layout.prop(context.scene, "atlasmap_simple_similarity", text="Similarity Tolerance")
         self.layout.operator(ATLASMAP_OT_atlas_to_simple_materials.bl_idname, icon="COLOR")

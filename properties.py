@@ -64,6 +64,11 @@ def register_properties():
         name="Background Color", description="RGBA color used for unoccupied atlas pixels",
         subtype="COLOR", size=4, default=(0.0, 0.0, 0.0, 0.0), min=0.0, max=1.0,
     )
+    bpy.types.Scene.atlasmap_simple_similarity = bpy.props.FloatProperty(
+        name="Similarity Tolerance",
+        description="Reuse an already created simple material when albedo (sRGB), metallic and roughness all differ by at most this percentage",
+        subtype="PERCENTAGE", default=5.0, min=0.0, max=50.0, precision=1, step=50,
+    )
     bpy.types.Scene.atlasmap_convert_to_smoothness = bpy.props.BoolProperty(
         name="Smoothness", description="Generate an inverted smoothness texture and invert it again for the Principled BSDF",
         default=False,
@@ -121,7 +126,7 @@ def unregister_properties():
         "atlasmap_uv_angle_limit", "atlasmap_uv_island_margin", "atlasmap_uv_margin_method",
         "atlasmap_uv_rotate_method", "atlasmap_uv_area_weight", "atlasmap_uv_correct_aspect",
         "atlasmap_uv_scale_to_bounds", "atlasmap_ao_texture_size", "atlasmap_ao_reunwrap_uv1",
-        "atlasmap_ao_cycles_samples", "atlasmap_ao_island_margin",
+        "atlasmap_ao_cycles_samples", "atlasmap_ao_island_margin", "atlasmap_simple_similarity",
     )
     for name in names:
         delattr(bpy.types.Scene, name)

@@ -19,6 +19,8 @@ class SourceMaterial:
     maps: dict
     width: int
     height: int
+    # Every map is a single color, so its faces can sample the tile centre.
+    solid: bool = False
 
 
 CATEGORY_SUFFIXES = {
@@ -63,38 +65,50 @@ def _run(operator, material, action):
         raise ValueError(f"Could not {action} for material '{material.name}'.")
 
 
-def _normalize_materials(obj, context, materials):
+def _normalize_materials(objs, context, materials):
     """Generator step: unpack MOS, convert every material to textures, and match each material's R/S type to the Smoothness toggle."""
     scene = context.scene
-    previous_index = obj.active_material_index
+    previous_indices = {obj: obj.active_material_index for obj in objs}
     previous_channel_pack = scene.atlasmap_channel_pack
     try:
         scene.atlasmap_channel_pack = False
         for number, material in enumerate(materials, 1):
             yield f"Converting {material.name} ({number}/{len(materials)})"
-            obj.active_material_index = next(index for index, slot in enumerate(obj.material_slots) if slot.material == material)
+            # The texture operators act on the active object's active material, so run them on an object owning this material.
+            owner, index = next((obj, index) for obj in objs for index, slot in enumerate(obj.material_slots) if slot.material == material)
+            owner.active_material_index = index
             principled = next((node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None) if material.use_nodes else None
             if principled is None:
                 raise ValueError(f"Material '{material.name}' has no Principled BSDF node.")
-            if _existing_mos_node(principled) is not None:
-                _run(bpy.ops.atlasmap.unpack_mos, material, "unpack the MOS texture")
-            _run(bpy.ops.atlasmap.convert_shader_to_textures, material, "convert the shader to textures")
-            if _is_smoothness(principled) != scene.atlasmap_convert_to_smoothness:
-                _run(bpy.ops.atlasmap.switch_smoothness_roughness, material, "convert Smoothness/Roughness")
+            with context.temp_override(active_object=owner, object=owner):
+                if _existing_mos_node(principled) is not None:
+                    _run(bpy.ops.atlasmap.unpack_mos, material, "unpack the MOS texture")
+                _run(bpy.ops.atlasmap.convert_shader_to_textures, material, "convert the shader to textures")
+                if _is_smoothness(principled) != scene.atlasmap_convert_to_smoothness:
+                    _run(bpy.ops.atlasmap.switch_smoothness_roughness, material, "convert Smoothness/Roughness")
     finally:
         scene.atlasmap_channel_pack = previous_channel_pack
-        obj.active_material_index = previous_index
+        for obj, index in previous_indices.items():
+            obj.active_material_index = index
 
 
-FIT_TIP = "Increase Maximum Atlas Map Size, or use the Combine Materials button to downsample."
+FIT_TIP = "Increase Maximum Atlas Map Size, or run the atlas button from the AtlasMap panel to downsample."
 
 
 def _is_uniform(pixels):
     return bool((pixels == pixels[0, 0]).all())
 
 
-def _object_materials(obj):
-    return list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material))
+def _object_materials(objs):
+    return list(dict.fromkeys(slot.material for obj in objs for slot in obj.material_slots if slot.material))
+
+
+def _unique_meshes(objs):
+    """One object per mesh, so meshes shared by several objects are remapped once."""
+    by_mesh = {}
+    for obj in objs:
+        by_mesh.setdefault(obj.data, obj)
+    return list(by_mesh.values())
 
 
 def _estimate_maps(materials, texture_size):
@@ -161,17 +175,17 @@ def _find_downsample_factor(estimates, scene):
             raise ValueError("Downsampling cannot make the textures fit; increase Maximum Atlas Map Size.")
 
 
-def _collect_source_materials(obj, context, factor=1.0):
+def _collect_source_materials(objs, context, factor=1.0):
     """Generator step yielding a progress label per unit of work; returns (sources, category)."""
-    materials = _object_materials(obj)
+    materials = _object_materials(objs)
     if not materials:
-        raise ValueError("The active mesh has no material slots.")
+        raise ValueError("The mesh(es) have no materials.")
     if factor >= 1.0:
         estimates = _estimate_maps(materials, context.scene.atlasmap_texture_size)
         problem = _fit_problem({material: _tile_size(maps) for material, maps in estimates.items()}, context.scene.atlasmap_maximum_size)
         if problem is not None:
             raise ValueError(f"{problem} {FIT_TIP}")
-    yield from _normalize_materials(obj, context, materials)
+    yield from _normalize_materials(objs, context, materials)
 
     category = "Smoothness" if context.scene.atlasmap_convert_to_smoothness else "Roughness"
     sources = []
@@ -207,7 +221,7 @@ def _collect_source_materials(obj, context, factor=1.0):
             else:
                 method = resolve_resample_method("AUTO", max(width / pixels.shape[1], height / pixels.shape[0]))
                 arrays[name] = resample_pixels(pixels, width, height, method)
-        sources.append(SourceMaterial(material, arrays, width, height))
+        sources.append(SourceMaterial(material, arrays, width, height, all(uniform.values())))
     return sources, category
 
 
@@ -244,18 +258,18 @@ def _build_combined_material(name, images, category):
     return material
 
 
-def combine_step_count(obj):
-    """Number of labels _combine_steps yields: convert + read per material, packing, four atlases, building."""
-    return 2 * len(_object_materials(obj)) + 6
+def combine_step_count(objs):
+    """Number of labels _combine_steps yields: convert + read per material, packing, four atlases, building, remap per mesh."""
+    return 2 * len(_object_materials(objs)) + 6 + len(_unique_meshes(objs))
 
 
-def _combine_steps(obj, context, factor):
+def _combine_steps(objs, context, factor, name):
     """Generator yielding a progress label before each unit of work; returns the (level, message) report."""
     scene = context.scene
     margin = scene.atlasmap_atlas_margin
-    if obj.mode != "OBJECT":
+    if context.object is not None and context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
-    sources, category = yield from _collect_source_materials(obj, context, factor)
+    sources, category = yield from _collect_source_materials(objs, context, factor)
     yield "Packing atlas"
     start_size = initial_atlas_size(sources)
     atlas_width, atlas_height, placements = pack_materials(sources, start_size, scene.atlasmap_maximum_size, margin)
@@ -271,33 +285,46 @@ def _combine_steps(obj, context, factor):
     atlas_images = {}
     for map_category, pixels in atlas_pixels.items():
         colorspace = "sRGB" if map_category == "Albedo" else "Non-Color"
-        atlas_images[map_category] = create_packed_image(f"{obj.name}_Atlas_{map_category}", pixels, colorspace)
-    combined = _build_combined_material(f"{obj.name}_AtlasMaterial", atlas_images, category)
+        atlas_images[map_category] = create_packed_image(f"{name}_{map_category}", pixels, colorspace)
+    combined = _build_combined_material(f"{name}Material", atlas_images, category)
 
-    # Remap the UV map the textures sample (the render UV map); UV1 used for AO is left alone.
-    uv_layers = obj.data.uv_layers
-    uv_layer = next((layer for layer in uv_layers if layer.active_render), uv_layers[0])
-    material_by_slot = {index: slot.material for index, slot in enumerate(obj.material_slots)}
     source_by_material = {source.material: source for source in sources}
-    tiled = False
-    for polygon in obj.data.polygons:
-        source = source_by_material.get(material_by_slot.get(polygon.material_index))
-        if source is not None:
-            placement = placements[source]
-            for loop_index in polygon.loop_indices:
-                uv = uv_layer.data[loop_index].uv
-                tiled = tiled or not (-1e-4 <= uv.x <= 1.0001 and -1e-4 <= uv.y <= 1.0001)
-                uv.x = (placement.x + uv.x * placement.width) / atlas_width
-                uv.y = (atlas_height - placement.y - placement.height + uv.y * placement.height) / atlas_height
-        polygon.material_index = 0
-    obj.data.materials.clear()
-    obj.data.materials.append(combined)
+    tiled = []
+    for obj in _unique_meshes(objs):
+        yield f"Remapping {obj.name}"
+        # Remap the UV map the textures sample (the render UV map); UV1 used for AO is left alone.
+        uv_layers = obj.data.uv_layers
+        uv_layer = next((layer for layer in uv_layers if layer.active_render), uv_layers[0])
+        material_by_slot = {index: slot.material for index, slot in enumerate(obj.material_slots)}
+        outside = False
+        for polygon in obj.data.polygons:
+            source = source_by_material.get(material_by_slot.get(polygon.material_index))
+            if source is not None and source.solid:
+                # Zero-size UVs at the tile centre keep solid colors as far from neighbouring tiles as possible.
+                placement = placements[source]
+                center_x = (placement.x + placement.width / 2) / atlas_width
+                center_y = (atlas_height - placement.y - placement.height / 2) / atlas_height
+                for loop_index in polygon.loop_indices:
+                    uv_layer.data[loop_index].uv = (center_x, center_y)
+            elif source is not None:
+                placement = placements[source]
+                for loop_index in polygon.loop_indices:
+                    uv = uv_layer.data[loop_index].uv
+                    outside = outside or not (-1e-4 <= uv.x <= 1.0001 and -1e-4 <= uv.y <= 1.0001)
+                    uv.x = (placement.x + uv.x * placement.width) / atlas_width
+                    uv.y = (atlas_height - placement.y - placement.height + uv.y * placement.height) / atlas_height
+            polygon.material_index = 0
+        # Every material now lives in the atlas, so one slot is enough.
+        obj.data.materials.clear()
+        obj.data.materials.append(combined)
+        if outside:
+            tiled.append(f"{obj.name} ({uv_layer.name})")
 
-    message = f"Combined {len(sources)} materials into {atlas_width}x{atlas_height} atlases."
+    message = f"Combined {len(sources)} materials from {len(objs)} object(s) into {atlas_width}x{atlas_height} atlases."
     if factor < 1.0:
         message += f" Textures downsampled to 1/{round(1 / factor)} size."
     if tiled:
-        return {"WARNING"}, message + f" Some UVs in '{uv_layer.name}' were outside 0-1 and will sample neighbouring atlas regions."
+        return {"WARNING"}, message + f" Some UVs were outside 0-1 and will sample neighbouring atlas regions: {', '.join(tiled)}."
     return {"INFO"}, message
 
 
@@ -307,30 +334,47 @@ def _redraw(context):
             area.tag_redraw()
 
 
-def _restore_previous_state(window):
-    """After the operator has exited, undo back to the "Before Combine Materials" step."""
+def _restore_previous_state(window, label):
+    """After the operator has exited, undo back to the "Before <label>" step."""
     def restore():
         with bpy.context.temp_override(window=window):
-            bpy.ops.ed.undo_push(message="Combine Materials (cancelled)")
+            bpy.ops.ed.undo_push(message=f"{label} (cancelled)")
             bpy.ops.ed.undo()
         return None
     bpy.app.timers.register(restore, first_interval=0.0)
 
 
-class ATLASMAP_OT_combine_materials(bpy.types.Operator):
-    bl_idname = "atlasmap.combine_materials"
-    bl_label = "Combine Materials"
+class _AtlasOperatorMixin:
+    """Shared atlas generation flow: fit check with downsample prompt, modal progress, and undo restore on cancel or error."""
+
     bl_options = {"UNDO"}
 
     downsample_factor: bpy.props.FloatProperty(default=1.0, min=0.0, max=1.0, options={"HIDDEN", "SKIP_SAVE"})
     prompt_message: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
+    def _targets(self, context):
+        raise NotImplementedError
+
+    def _atlas_name(self, context):
+        raise NotImplementedError
+
+    def _validation_error(self, objs):
+        if not objs:
+            return "Select at least one mesh object."
+        for problem, failing in (
+            ("need a UV map", [obj.name for obj in objs if not obj.data.uv_layers]),
+            ("have no materials", [obj.name for obj in objs if not any(slot.material for slot in obj.material_slots)]),
+        ):
+            if failing:
+                return f"Object(s) {problem}: {', '.join(failing)}."
+        return None
+
     def invoke(self, context, event):
-        obj = context.active_object
-        if obj is None or obj.type != "MESH" or not obj.data.uv_layers:
+        objs = self._targets(context)
+        if self._validation_error(objs) is not None:
             return self.execute(context)
         scene = context.scene
-        estimates = _estimate_maps(_object_materials(obj), scene.atlasmap_texture_size)
+        estimates = _estimate_maps(_object_materials(objs), scene.atlasmap_texture_size)
         problem = _fit_problem({material: _tile_size(maps) for material, maps in estimates.items()}, scene.atlasmap_maximum_size)
         if problem is None:
             return self.execute(context)
@@ -354,17 +398,16 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
 
     def execute(self, context):
         self.prompt_message = ""
-        obj = context.active_object
-        if obj is None or obj.type != "MESH":
-            self.report({"ERROR"}, "The active object must be a mesh.")
+        objs = self._targets(context)
+        error = self._validation_error(objs)
+        if error is not None:
+            self.report({"ERROR"}, error)
             return {"CANCELLED"}
-        if not obj.data.uv_layers:
-            self.report({"ERROR"}, "The active mesh needs a UV map.")
-            return {"CANCELLED"}
+        name = self._atlas_name(context)
 
         if bpy.app.background or context.window is None:
             # Scripted/headless use: run every step at once.
-            steps = _combine_steps(obj, context, self.downsample_factor)
+            steps = _combine_steps(objs, context, self.downsample_factor, name)
             try:
                 while True:
                     next(steps)
@@ -375,10 +418,10 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
                 self.report({"ERROR"}, str(error))
                 return {"CANCELLED"}
 
-        bpy.ops.ed.undo_push(message="Before Combine Materials")
+        bpy.ops.ed.undo_push(message=f"Before {self.bl_label}")
         self._window = context.window
-        self._steps = _combine_steps(obj, context, self.downsample_factor)
-        self._total = combine_step_count(obj)
+        self._steps = _combine_steps(objs, context, self.downsample_factor, name)
+        self._total = combine_step_count(objs)
         self._done = 0
         wm = context.window_manager
         wm.atlasmap_progress_task = "COMBINE"
@@ -394,8 +437,8 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
         if event.type == "ESC":
             self._steps.close()
             self._finish(context)
-            _restore_previous_state(self._window)
-            self.report({"WARNING"}, "Combine Materials cancelled; previous state restored.")
+            _restore_previous_state(self._window, self.bl_label)
+            self.report({"WARNING"}, f"{self.bl_label} cancelled; previous state restored.")
             return {"CANCELLED"}
         if event.type != "TIMER":
             # Block other input so the mesh and materials can't change mid-run.
@@ -408,7 +451,7 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
             return {"FINISHED"}
         except (RuntimeError, ValueError) as error:
             self._finish(context)
-            _restore_previous_state(self._window)
+            _restore_previous_state(self._window, self.bl_label)
             self.report({"ERROR"}, f"{error} Previous state restored.")
             return {"CANCELLED"}
         wm = context.window_manager
@@ -426,3 +469,32 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
         wm.atlasmap_progress_text = ""
         wm.atlasmap_progress_task = ""
         _redraw(context)
+
+
+class ATLASMAP_OT_combine_materials(_AtlasOperatorMixin, bpy.types.Operator):
+    bl_idname = "atlasmap.combine_materials"
+    bl_label = "Generate Atlasmap"
+    bl_description = "Pack all materials of the active mesh into one atlas material"
+
+    def _targets(self, context):
+        obj = context.active_object
+        return [obj] if obj is not None and obj.type == "MESH" else []
+
+    def _atlas_name(self, context):
+        return f"{context.active_object.name}_Atlas"
+
+
+class ATLASMAP_OT_combine_shared_materials(_AtlasOperatorMixin, bpy.types.Operator):
+    bl_idname = "atlasmap.combine_shared_materials"
+    bl_label = "Generate Shared Atlasmap"
+    bl_description = "Pack the materials of all selected meshes into one shared atlas material; the objects stay separate"
+
+    def _targets(self, context):
+        objs = [obj for obj in context.selected_objects if obj.type == "MESH"]
+        active = context.active_object
+        if active is not None and active.type == "MESH" and active not in objs:
+            objs.insert(0, active)
+        return objs
+
+    def _atlas_name(self, context):
+        return f"{self._targets(context)[0].name}_SharedAtlas"
