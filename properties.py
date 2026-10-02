@@ -21,6 +21,8 @@ def _show_selected_texture(scene, context):
         for area in window.screen.areas:
             if area.type == "IMAGE_EDITOR" and not area.spaces.active.use_image_pin:
                 area.spaces.active.image = node.image
+                # Blender auto-pins images assigned to a UV editor; undo that so the editor keeps following the list.
+                area.spaces.active.use_image_pin = False
 
 
 def register_properties():
