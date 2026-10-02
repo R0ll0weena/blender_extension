@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import bpy
 import numpy as np
 
-from ..utils.atlas_images import compose_atlas, create_packed_image, image_to_array
+from ..utils.atlas_images import compose_atlas, create_packed_image, image_to_array, image_to_linear_array, is_high_precision
 from ..utils.atlas_layout import initial_atlas_size, pack_materials
 from ..utils.node_layout import arrange_material_nodes
 from ..utils.resampling import resample_pixels, resample_scaled, resolve_resample_method, scaled_size
@@ -126,6 +126,16 @@ def _estimate_maps(materials, texture_size):
     return estimates
 
 
+def _high_precision_maps(estimates):
+    """Atlas map categories whose source textures are stored above 8 bits per channel, with those images."""
+    found = {}
+    for maps in estimates.values():
+        for category, (_, _, image) in zip(("Albedo", "Metallic", "Roughness", "Normal"), maps):
+            if image is not None and is_high_precision(image):
+                found.setdefault(category, []).append(image)
+    return {category: list(dict.fromkeys(images)) for category, images in found.items()}
+
+
 def _tile_size(maps, factor=1.0, solid=None):
     """Tile = largest map. When downsampling, only the scaled non-solid maps set the size; solid maps are stretched losslessly."""
     sizes = [(width, height) for width, height, _ in maps]
@@ -199,8 +209,8 @@ def _collect_source_materials(objs, context, factor=1.0):
         empty = [image.name for image in maps.values() if 0 in image.size[:]]
         if empty:
             raise ValueError(f"Image(s) have no pixel data: {', '.join(empty)}.")
-        arrays = {name: image_to_array(image) for name, image in maps.items()}
-        uniform = {name: _is_uniform(pixels) for name, pixels in arrays.items()}
+        arrays = {name: image_to_linear_array(image) for name, image in maps.items()}
+        uniform ={name: _is_uniform(pixels) for name, pixels in arrays.items()}
         real = [name for name in arrays if not uniform[name]]
         # Textures of one material share a size; smaller ones are resized to the largest.
         # When downsampling, non-solid textures are scaled with the Scale Textures implementation and set the size instead.
@@ -214,11 +224,10 @@ def _collect_source_materials(objs, context, factor=1.0):
             width = max(image.size[0] for image in maps.values())
             height = max(image.size[1] for image in maps.values())
         for name, pixels in arrays.items():
-            if pixels.shape[:2] == (height, width):
-                continue
             if uniform[name]:
-                arrays[name] = np.broadcast_to(pixels[0, 0], (height, width, 4)).copy()
-            else:
+                # A read-only broadcast of one pixel instead of a full-size array; copying the pixel frees the source array.
+                arrays[name] = np.broadcast_to(pixels[0, 0].copy(), (height, width, 4))
+            elif pixels.shape[:2] != (height, width):
                 method = resolve_resample_method("AUTO", max(width / pixels.shape[1], height / pixels.shape[0]))
                 arrays[name] = resample_pixels(pixels, width, height, method)
         sources.append(SourceMaterial(material, arrays, width, height, all(uniform.values())))
@@ -263,8 +272,9 @@ def combine_step_count(objs):
     return 2 * len(_object_materials(objs)) + 6 + len(_unique_meshes(objs))
 
 
-def _combine_steps(objs, context, factor, name):
-    """Generator yielding a progress label before each unit of work; returns the (level, message) report."""
+def _combine_steps(objs, context, factor, name, high_precision=frozenset()):
+    """Generator yielding a progress label before each unit of work; returns the (level, message) report.
+    high_precision holds the map categories ("Roughness" also covers Smoothness) stored as float atlases; the rest are 8-bit."""
     scene = context.scene
     margin = scene.atlasmap_atlas_margin
     if context.object is not None and context.object.mode != "OBJECT":
@@ -275,17 +285,25 @@ def _combine_steps(objs, context, factor, name):
     atlas_width, atlas_height, placements = pack_materials(sources, start_size, scene.atlasmap_maximum_size, margin)
 
     # Packing succeeded, so pixels can be written now.
+    # One atlas at a time: compose, hand to Blender, then drop the array, so only one full-size atlas array is alive.
     background = tuple(scene.atlasmap_background_color)
-    atlas_pixels = {}
-    for map_category in ("Albedo", "Metallic", category, "Normal"):
-        yield f"Composing {map_category} atlas"
-        atlas_pixels[map_category] = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, background, margin)
+    atlas_images = {}
+    try:
+        for map_category in ("Albedo", "Metallic", category, "Normal"):
+            yield f"Composing {map_category} atlas"
+            pixels = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, background, margin)
+            colorspace = "sRGB" if map_category == "Albedo" else "Non-Color"
+            keep_float = (map_category if map_category != "Smoothness" else "Roughness") in high_precision
+            atlas_images[map_category] = create_packed_image(f"{name}_{map_category}", pixels, colorspace, keep_float)
+            del pixels
+            for source in sources:
+                source.maps.pop(map_category, None)
+    except (MemoryError, ValueError):
+        for image in atlas_images.values():
+            bpy.data.images.remove(image)
+        raise
 
     yield "Building atlas material"
-    atlas_images = {}
-    for map_category, pixels in atlas_pixels.items():
-        colorspace = "sRGB" if map_category == "Albedo" else "Non-Color"
-        atlas_images[map_category] = create_packed_image(f"{name}_{map_category}", pixels, colorspace)
     combined = _build_combined_material(f"{name}Material", atlas_images, category)
 
     source_by_material = {source.material: source for source in sources}
@@ -351,6 +369,12 @@ class _AtlasOperatorMixin:
 
     downsample_factor: bpy.props.FloatProperty(default=1.0, min=0.0, max=1.0, options={"HIDDEN", "SKIP_SAVE"})
     prompt_message: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    keep_high_precision: bpy.props.BoolProperty(
+        name="Keep High Precision",
+        description="Store atlases of maps with 16-bit or float source textures as float images (4x the memory of 8-bit)",
+        default=False, options={"SKIP_SAVE"},
+    )
+    precision_message: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
 
     def _targets(self, context):
         raise NotImplementedError
@@ -376,51 +400,67 @@ class _AtlasOperatorMixin:
         scene = context.scene
         estimates = _estimate_maps(_object_materials(objs), scene.atlasmap_texture_size)
         problem = _fit_problem({material: _tile_size(maps) for material, maps in estimates.items()}, scene.atlasmap_maximum_size)
-        if problem is None:
+        if problem is not None:
+            try:
+                self.downsample_factor = _find_downsample_factor(estimates, scene)
+            except ValueError as error:
+                self.report({"ERROR"}, f"{problem} {error}")
+                return {"CANCELLED"}
+            self.prompt_message = problem
+        high_precision = _high_precision_maps(estimates)
+        if high_precision:
+            images = list(dict.fromkeys(image.name for found in high_precision.values() for image in found))
+            shown = ", ".join(images[:3]) + (f" and {len(images) - 3} more" if len(images) > 3 else "")
+            self.precision_message = f"Above 8-bit: {shown} ({', '.join(high_precision)} maps)."
+        if problem is None and not high_precision:
             return self.execute(context)
-        try:
-            self.downsample_factor = _find_downsample_factor(estimates, scene)
-        except ValueError as error:
-            self.report({"ERROR"}, f"{problem} {error}")
-            return {"CANCELLED"}
-        self.prompt_message = problem
-        return context.window_manager.invoke_props_dialog(self, width=520, title="Textures Don't Fit", confirm_text="Downsample")
+        title = "Textures Don't Fit" if problem is not None else "High Precision Textures"
+        return context.window_manager.invoke_props_dialog(self, width=520, title=title, confirm_text="Downsample" if problem is not None else "Generate")
 
     def draw(self, context):
-        if not self.prompt_message:
-            return
         column = self.layout.column(align=True)
-        column.label(text=self.prompt_message, icon="ERROR")
-        column.label(text=f"Downsample the textures to 1/{round(1 / self.downsample_factor)} size? Solid-color textures are left as is.")
-        column.label(text="Downsampling and combining large textures can take minutes.", icon="TIME")
-        column.separator()
-        column.label(text="Tip: cancel and increase Maximum Atlas Map Size to keep full resolution.", icon="INFO")
+        if self.prompt_message:
+            column.label(text=self.prompt_message, icon="ERROR")
+            column.label(text=f"Downsample the textures to 1/{round(1 / self.downsample_factor)} size? Solid-color textures are left as is.")
+            column.label(text="Downsampling and combining large textures can take minutes.", icon="TIME")
+            column.separator()
+            column.label(text="Tip: cancel and increase Maximum Atlas Map Size to keep full resolution.", icon="INFO")
+        if self.precision_message:
+            if self.prompt_message:
+                column.separator()
+            column.label(text=self.precision_message, icon="IMAGE_DATA")
+            column.label(text="Atlases are 8-bit by default. Keeping float uses 4x the memory for those maps.")
+            column.prop(self, "keep_high_precision")
 
     def execute(self, context):
         self.prompt_message = ""
+        self.precision_message = ""
         objs = self._targets(context)
         error = self._validation_error(objs)
         if error is not None:
             self.report({"ERROR"}, error)
             return {"CANCELLED"}
         name = self._atlas_name(context)
+        high_precision = frozenset()
+        if self.keep_high_precision:
+            high_precision = frozenset(_high_precision_maps(_estimate_maps(_object_materials(objs), context.scene.atlasmap_texture_size)))
 
         if bpy.app.background or context.window is None:
             # Scripted/headless use: run every step at once.
-            steps = _combine_steps(objs, context, self.downsample_factor, name)
+            steps = _combine_steps(objs, context, self.downsample_factor, name, high_precision)
             try:
                 while True:
                     next(steps)
             except StopIteration as done:
                 self.report(*done.value)
                 return {"FINISHED"}
-            except (RuntimeError, ValueError) as error:
+            except (RuntimeError, ValueError, MemoryError) as error:
                 self.report({"ERROR"}, str(error))
                 return {"CANCELLED"}
 
         bpy.ops.ed.undo_push(message=f"Before {self.bl_label}")
         self._window = context.window
-        self._steps = _combine_steps(objs, context, self.downsample_factor, name)
+        self._steps = _combine_steps(objs, context, self.downsample_factor, name, high_precision)
         self._total = combine_step_count(objs)
         self._done = 0
         wm = context.window_manager
@@ -449,7 +489,7 @@ class _AtlasOperatorMixin:
             self._finish(context)
             self.report(*done.value)
             return {"FINISHED"}
-        except (RuntimeError, ValueError) as error:
+        except (RuntimeError, ValueError, MemoryError) as error:
             self._finish(context)
             _restore_previous_state(self._window, self.bl_label)
             self.report({"ERROR"}, f"{error} Previous state restored.")
