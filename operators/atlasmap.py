@@ -1,5 +1,6 @@
 """Material atlas generation operator."""
 
+import math
 from dataclasses import dataclass
 
 import bpy
@@ -83,10 +84,40 @@ def _normalize_materials(obj, context, materials):
         obj.active_material_index = previous_index
 
 
+def _estimate_tile_size(material, texture_size):
+    """Predict a material's atlas tile size from image sizes only; maps still to be generated use texture_size."""
+    principled = next((node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None) if material.use_nodes else None
+    if principled is None:
+        return None
+    sizes = []
+    for category in ("Albedo", "Metallic", "Roughness", "Normal"):
+        image = _find_map_image(material, principled, category)
+        sizes.append(tuple(image.size) if image is not None else (texture_size, texture_size))
+    return max(width for width, _ in sizes), max(height for _, height in sizes)
+
+
+def _check_atlas_can_fit(materials, scene):
+    """Fail fast, before any texture work, when the tiles cannot fit the maximum atlas size even with perfect packing."""
+    maximum = scene.atlasmap_maximum_size
+    total_area = 0
+    for material in materials:
+        size = _estimate_tile_size(material, scene.atlasmap_texture_size)
+        if size is None:
+            continue
+        width, height = size
+        if width > maximum or height > maximum:
+            raise ValueError(f"Material '{material.name}' needs a {width}x{height} tile, larger than the maximum atlas size {maximum}.")
+        total_area += width * height
+    if total_area > maximum * maximum:
+        side = math.ceil(math.sqrt(total_area))
+        raise ValueError(f"Textures need at least {total_area} pixels (about {side}x{side}) but the maximum atlas is {maximum}x{maximum}.")
+
+
 def _collect_source_materials(obj, context):
     materials = list(dict.fromkeys(slot.material for slot in obj.material_slots if slot.material))
     if not materials:
         raise ValueError("The active mesh has no material slots.")
+    _check_atlas_can_fit(materials, context.scene)
     _normalize_materials(obj, context, materials)
 
     category = "Smoothness" if context.scene.atlasmap_convert_to_smoothness else "Roughness"
