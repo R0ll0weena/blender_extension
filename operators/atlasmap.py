@@ -268,8 +268,47 @@ def _build_combined_material(name, images, category):
 
 
 def combine_step_count(objs):
-    """Number of labels _combine_steps yields: convert + read per material, packing, four atlases, building, remap per mesh."""
-    return 2 * len(_object_materials(objs)) + 6 + len(_unique_meshes(objs))
+    """Number of labels _combine_steps yields: isolating, convert + read per material, packing, four atlases, building, remap per mesh."""
+    return 2 * len(_object_materials(objs)) + 7 + len(_unique_meshes(objs))
+
+
+def _isolate_from_other_objects(objs):
+    """Generator step: give the targets their own copies of meshes, materials and textures that objects outside the
+    targets also use, so generation (which edits UVs, node graphs and even pixels in place) never changes those objects."""
+    yield "Making data single-user"
+    targets = set(objs)
+    outside = [obj for obj in bpy.data.objects if obj not in targets]
+
+    # Meshes first, so the slot changes below land on the copies. Targets sharing a mesh keep sharing one copy.
+    outside_meshes = {obj.data for obj in outside if obj.type == "MESH"}
+    mesh_copies = {}
+    for obj in objs:
+        if obj.data in outside_meshes:
+            if obj.data not in mesh_copies:
+                mesh_copies[obj.data] = obj.data.copy()
+            obj.data = mesh_copies[obj.data]
+
+    outside_materials = {slot.material for obj in outside for slot in obj.material_slots if slot.material}
+    material_copies = {}
+    for obj in objs:
+        for slot in obj.material_slots:
+            if slot.material in outside_materials:
+                if slot.material not in material_copies:
+                    material_copies[slot.material] = slot.material.copy()
+                slot.material = material_copies[slot.material]
+
+    # Textures still shared with the outside objects' materials; Roughness/Smoothness switching inverts pixels in place.
+    outside_images = {node.image for material in outside_materials if material.use_nodes
+                      for node in material.node_tree.nodes if node.type == "TEX_IMAGE" and node.image is not None}
+    image_copies = {}
+    for material in _object_materials(objs):
+        if not material.use_nodes:
+            continue
+        for node in material.node_tree.nodes:
+            if node.type == "TEX_IMAGE" and node.image in outside_images:
+                if node.image not in image_copies:
+                    image_copies[node.image] = node.image.copy()
+                node.image = image_copies[node.image]
 
 
 def _combine_steps(objs, context, factor, name, high_precision=frozenset()):
@@ -279,6 +318,7 @@ def _combine_steps(objs, context, factor, name, high_precision=frozenset()):
     margin = scene.atlasmap_atlas_margin
     if context.object is not None and context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
+    yield from _isolate_from_other_objects(objs)
     sources, category = yield from _collect_source_materials(objs, context, factor)
     yield "Packing atlas"
     start_size = initial_atlas_size(sources)
@@ -286,12 +326,11 @@ def _combine_steps(objs, context, factor, name, high_precision=frozenset()):
 
     # Packing succeeded, so pixels can be written now.
     # One atlas at a time: compose, hand to Blender, then drop the array, so only one full-size atlas array is alive.
-    background = tuple(scene.atlasmap_background_color)
     atlas_images = {}
     try:
         for map_category in ("Albedo", "Metallic", category, "Normal"):
             yield f"Composing {map_category} atlas"
-            pixels = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, background, margin)
+            pixels = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, margin)
             colorspace = "sRGB" if map_category == "Albedo" else "Non-Color"
             keep_float = (map_category if map_category != "Smoothness" else "Roughness") in high_precision
             atlas_images[map_category] = create_packed_image(f"{name}_{map_category}", pixels, colorspace, keep_float)

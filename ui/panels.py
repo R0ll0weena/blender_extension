@@ -108,7 +108,6 @@ class ATLASMAP_PT_generate_atlasmap(bpy.types.Panel):
         layout = self.layout
         layout.prop(context.scene, "atlasmap_maximum_size", text="Maximum Atlas Map Size")
         layout.prop(context.scene, "atlasmap_atlas_margin", text="Atlas Margin")
-        layout.prop(context.scene, "atlasmap_background_color", text="Background Color")
         wm = context.window_manager
         if wm.atlasmap_progress_running and wm.atlasmap_progress_task == "COMBINE":
             layout.progress(factor=wm.atlasmap_progress, type="BAR", text=wm.atlasmap_progress_text)

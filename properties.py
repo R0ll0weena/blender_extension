@@ -62,10 +62,6 @@ def register_properties():
         name="Atlas Margin", description="Minimum gap in pixels between packed textures",
         default=4, min=0, max=256,
     )
-    bpy.types.Scene.atlasmap_background_color = bpy.props.FloatVectorProperty(
-        name="Background Color", description="RGBA color used for unoccupied atlas pixels",
-        subtype="COLOR", size=4, default=(0.0, 0.0, 0.0, 0.0), min=0.0, max=1.0,
-    )
     bpy.types.Scene.atlasmap_simple_similarity = bpy.props.FloatProperty(
         name="Similarity Tolerance",
         description="Reuse an already created simple material when albedo (sRGB), metallic and roughness all differ by at most this percentage",
@@ -123,7 +119,7 @@ def register_properties():
 def unregister_properties():
     names = (
         "atlasmap_texture_index", "atlasmap_resample_factor", "atlasmap_resample_method",
-        "atlasmap_maximum_size", "atlasmap_atlas_margin", "atlasmap_background_color",
+        "atlasmap_maximum_size", "atlasmap_atlas_margin",
         "atlasmap_convert_to_smoothness", "atlasmap_channel_pack", "atlasmap_texture_size",
         "atlasmap_uv_angle_limit", "atlasmap_uv_island_margin", "atlasmap_uv_margin_method",
         "atlasmap_uv_rotate_method", "atlasmap_uv_area_weight", "atlasmap_uv_correct_aspect",

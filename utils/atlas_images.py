@@ -39,9 +39,9 @@ def image_to_linear_array(image):
     return pixels
 
 
-def compose_atlas(sources, placements, width, height, category, background_color, margin):
-    atlas = np.empty((height, width, 4), dtype=np.float32)
-    atlas[:, :] = np.asarray(background_color, dtype=np.float32)
+def compose_atlas(sources, placements, width, height, category, margin):
+    # Space no tile covers is never sampled, so it stays transparent black.
+    atlas = np.zeros((height, width, 4), dtype=np.float32)
     # Fill each tile's margin by repeating its edge pixels. Neighbours are at least `margin` apart, so splitting
     # the margin floor/ceil across opposite sides keeps paddings from overlapping.
     before, after = margin // 2, margin - margin // 2
