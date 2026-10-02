@@ -4,6 +4,7 @@ import bpy
 
 from ..operators.ambient_occlusion import ATLASMAP_OT_bake_ambient_occlusion
 from ..operators.atlasmap import ATLASMAP_OT_combine_materials
+from ..operators.color_mapper import ATLASMAP_OT_atlas_to_simple_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
 from ..operators.resample import ATLASMAP_OT_resample_selected_texture
 from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos
@@ -102,3 +103,16 @@ class ATLASMAP_PT_generate_atlasmap(bpy.types.Panel):
         layout.prop(context.scene, "atlasmap_atlas_margin", text="Atlas Margin")
         layout.prop(context.scene, "atlasmap_background_color", text="Background Color")
         layout.operator(ATLASMAP_OT_combine_materials.bl_idname, icon="MATERIAL")
+
+
+class ATLASMAP_PT_color_mapper(bpy.types.Panel):
+    bl_label = "Color Mapper"
+    bl_idname = "ATLASMAP_PT_color_mapper"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "AtlasMap"
+    bl_order = 5
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        self.layout.operator(ATLASMAP_OT_atlas_to_simple_materials.bl_idname, icon="COLOR")

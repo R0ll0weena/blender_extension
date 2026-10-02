@@ -2,6 +2,7 @@
 
 from .panels import (
     ATLASMAP_PT_ambient_occlusion_baking,
+    ATLASMAP_PT_color_mapper,
     ATLASMAP_PT_generate_atlasmap,
     ATLASMAP_PT_generate_textures,
     ATLASMAP_PT_normalize_textures,
@@ -14,4 +15,5 @@ UI_CLASSES = (
     ATLASMAP_PT_normalize_textures,
     ATLASMAP_PT_ambient_occlusion_baking,
     ATLASMAP_PT_generate_atlasmap,
+    ATLASMAP_PT_color_mapper,
 )

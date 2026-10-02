@@ -177,7 +177,7 @@ class ATLASMAP_OT_combine_materials(bpy.types.Operator):
         background = tuple(scene.atlasmap_background_color)
         atlas_images = {}
         for map_category in ("Albedo", "Metallic", category, "Normal"):
-            pixels = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, background)
+            pixels = compose_atlas(sources, placements, atlas_width, atlas_height, map_category, background, margin)
             colorspace = "sRGB" if map_category == "Albedo" else "Non-Color"
             atlas_images[map_category] = create_packed_image(f"{obj.name}_Atlas_{map_category}", pixels, colorspace)
         combined = _build_combined_material(f"{obj.name}_AtlasMaterial", atlas_images, category)

@@ -1,9 +1,43 @@
 """Operators for generating solid-color material textures."""
 
 import bpy
+import numpy as np
 
 from ..utils.material_graph import create_albedo_texture
 from ..utils.node_layout import arrange_material_nodes
+
+# Fraction of the 0-1 tile the material's UVs are fitted into, keeping them away from the tile edges to avoid atlas bleed.
+UV_TILE_FILL = 0.7
+
+
+def _fit_uvs_to_tile_center(obj, material):
+    """Uniformly scale the UVs of faces using material so their bounds fill the centre UV_TILE_FILL of the tile."""
+    if obj.type != "MESH" or not obj.data.uv_layers:
+        return False
+    previous_mode = obj.mode
+    if previous_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        mesh = obj.data
+        uv_layer = next((layer for layer in mesh.uv_layers if layer.active_render), mesh.uv_layers[0])
+        slots = {index for index, slot in enumerate(obj.material_slots) if slot.material == material}
+        loops = np.array([loop for polygon in mesh.polygons if polygon.material_index in slots for loop in polygon.loop_indices], dtype=np.int64)
+        if not len(loops):
+            return False
+        uvs = np.empty(len(mesh.loops) * 2, dtype=np.float32)
+        uv_layer.data.foreach_get("uv", uvs)
+        uvs = uvs.reshape(-1, 2)
+        selected = uvs[loops]
+        low, high = selected.min(axis=0), selected.max(axis=0)
+        extent = (high - low).max()
+        scale = UV_TILE_FILL / extent if extent > 0 else 0.0
+        uvs[loops] = (selected - (low + high) / 2) * scale + 0.5
+        uv_layer.data.foreach_set("uv", uvs.ravel())
+        mesh.update()
+        return True
+    finally:
+        if previous_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode=previous_mode)
 
 
 class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
@@ -127,5 +161,8 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
         message = f"Created {len(created_maps)} texture(s) at {texture_size}x{texture_size}: {', '.join(created_maps)}." if created_maps else "No textures created; all supported inputs are already connected."
         if skipped_maps:
             message += f" Skipped connected inputs: {', '.join(skipped_maps)}."
+        # Only remap UVs when every map is a generated solid color, so existing textures keep their mapping.
+        if created_maps and not skipped_maps and _fit_uvs_to_tile_center(obj, material):
+            message += f" UVs fitted to the centre {UV_TILE_FILL:.0%} of the tile."
         self.report({"INFO"}, message)
         return {"FINISHED"}
