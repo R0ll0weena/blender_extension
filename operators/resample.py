@@ -1,5 +1,6 @@
 """Selected texture resampling operator."""
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -139,3 +140,60 @@ class ATLASMAP_OT_resample_selected_texture(bpy.types.Operator):
         wm.atlasmap_progress_text = ""
         wm.atlasmap_progress_task = ""
         _redraw(context)
+
+
+EXPORT_EXTENSIONS = {
+    "PNG": ".png", "JPEG": ".jpg", "TARGA": ".tga", "TARGA_RAW": ".tga", "OPEN_EXR": ".exr",
+    "TIFF": ".tif", "HDR": ".hdr", "BMP": ".bmp", "WEBP": ".webp",
+}
+
+
+class ATLASMAP_OT_export_textures(bpy.types.Operator):
+    bl_idname = "atlasmap.export_textures"
+    bl_label = "Export Textures"
+    bl_description = "Save all image textures of the active material to a folder"
+
+    directory: bpy.props.StringProperty(subtype="DIR_PATH")
+    filter_folder: bpy.props.BoolProperty(default=True, options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+        images = list(dict.fromkeys(
+            node.image for node in material.node_tree.nodes if node.type == "TEX_IMAGE" and node.image is not None
+        ))
+        if not images:
+            self.report({"ERROR"}, "The active material has no image textures.")
+            return {"CANCELLED"}
+        directory = bpy.path.abspath(self.directory)
+        if not os.path.isdir(directory):
+            self.report({"ERROR"}, f"Folder does not exist: {directory}")
+            return {"CANCELLED"}
+
+        exported, failed = 0, []
+        for image in images:
+            name = bpy.path.clean_name(os.path.splitext(image.name)[0])
+            path = os.path.join(directory, name + EXPORT_EXTENSIONS.get(image.file_format, ".png"))
+            try:
+                image.save(filepath=path)
+            except RuntimeError:
+                failed.append(image.name)
+                continue
+            exported += 1
+        if failed:
+            self.report({"WARNING"}, f"Exported {exported} texture(s); failed: {', '.join(failed)}.")
+        else:
+            self.report({"INFO"}, f"Exported {exported} texture(s) to {directory}.")
+        return {"FINISHED"}
