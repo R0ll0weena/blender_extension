@@ -7,7 +7,7 @@ from ..operators.atlasmap import ATLASMAP_OT_combine_materials, ATLASMAP_OT_comb
 from ..operators.color_mapper import ATLASMAP_OT_atlas_to_simple_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
 from ..operators.resample import ATLASMAP_OT_export_textures, ATLASMAP_OT_resample_selected_texture, selected_texture_images
-from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos
+from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_pack_orm, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos, ATLASMAP_OT_unpack_orm
 from ..operators.unwrap import ATLASMAP_OT_smart_unwrap_uv1
 
 
@@ -33,6 +33,8 @@ class ATLASMAP_PT_generate_textures(bpy.types.Panel):
         layout.separator()
         layout.operator(ATLASMAP_OT_pack_mos.bl_idname)
         layout.operator(ATLASMAP_OT_unpack_mos.bl_idname)
+        layout.operator(ATLASMAP_OT_pack_orm.bl_idname)
+        layout.operator(ATLASMAP_OT_unpack_orm.bl_idname)
         layout.operator(ATLASMAP_OT_switch_smoothness_roughness.bl_idname)
 
 
@@ -90,7 +92,7 @@ class ATLASMAP_PT_ambient_occlusion_baking(bpy.types.Panel):
             uv_body.prop(context.scene, "atlasmap_uv_scale_to_bounds", text="Scale to Bounds")
         layout.operator(ATLASMAP_OT_smart_unwrap_uv1.bl_idname, icon="UV")
         layout.separator()
-        layout.prop(context.scene, "atlasmap_ao_reunwrap_uv1", text="Re-unwrap UV1")
+        layout.prop(context.scene, "atlasmap_ao_reunwrap_uv1", text="Unwrap UV1")
         layout.prop(context.scene, "atlasmap_ao_texture_size", text="Texture Size")
         layout.prop(context.scene, "atlasmap_ao_cycles_samples", text="Cycles Samples")
         layout.prop(context.scene, "atlasmap_ao_island_margin", text="Island Margin")

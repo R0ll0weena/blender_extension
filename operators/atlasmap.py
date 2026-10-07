@@ -10,7 +10,7 @@ from ..utils.atlas_images import compose_atlas, create_packed_image, image_to_ar
 from ..utils.atlas_layout import initial_atlas_size, pack_materials
 from ..utils.node_layout import arrange_material_nodes
 from ..utils.resampling import resample_pixels, resample_scaled, resolve_resample_method, scaled_size
-from .texture_channels import _existing_mos_node
+from .texture_channels import _existing_mos_node, _existing_orm_node
 
 
 @dataclass(eq=False)
@@ -66,7 +66,7 @@ def _run(operator, material, action):
 
 
 def _normalize_materials(objs, context, materials):
-    """Generator step: unpack MOS, convert every material to textures, and match each material's R/S type to the Smoothness toggle."""
+    """Generator step: unpack MOS/ORM, convert every material to textures, and match each material's R/S type to the Smoothness toggle."""
     scene = context.scene
     previous_indices = {obj: obj.active_material_index for obj in objs}
     previous_channel_pack = scene.atlasmap_channel_pack
@@ -83,6 +83,8 @@ def _normalize_materials(objs, context, materials):
             with context.temp_override(active_object=owner, object=owner):
                 if _existing_mos_node(principled) is not None:
                     _run(bpy.ops.atlasmap.unpack_mos, material, "unpack the MOS texture")
+                if _existing_orm_node(principled) is not None:
+                    _run(bpy.ops.atlasmap.unpack_orm, material, "unpack the ORM texture")
                 _run(bpy.ops.atlasmap.convert_shader_to_textures, material, "convert the shader to textures")
                 if _is_smoothness(principled) != scene.atlasmap_convert_to_smoothness:
                     _run(bpy.ops.atlasmap.switch_smoothness_roughness, material, "convert Smoothness/Roughness")

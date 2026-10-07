@@ -45,20 +45,36 @@ def _channel(image, width, height):
     return pixels[..., 0]
 
 
-def _existing_mos_node(principled):
+MOS_LAYOUT = {"name": "MOS", "metallic": 0, "ao": 1, "rough": 2}
+ORM_LAYOUT = {"name": "ORM", "ao": 0, "rough": 1, "metallic": 2}
+_OUTPUTS = ("Red", "Green", "Blue")
+
+
+def _existing_packed_node(principled, layout):
     metallic_input = principled.inputs["Metallic"]
-    if not metallic_input.links or metallic_input.links[0].from_node.type != "SEPARATE_COLOR":
+    if not metallic_input.links:
         return None
-    return _direct_texture(metallic_input.links[0].from_node.inputs["Color"])
+    link = metallic_input.links[0]
+    if link.from_node.type != "SEPARATE_COLOR" or link.from_socket.name != _OUTPUTS[layout["metallic"]]:
+        return None
+    return _direct_texture(link.from_node.inputs["Color"])
 
 
-def _link_ao_sampler(node_tree, image, uv_node, location, ao_socket, sampler=None):
-    """Feed the MOS green channel into the AO multiply through a second sampler, so AO reads UV1 while M/R/S use the default UV map."""
+def _existing_mos_node(principled):
+    return _existing_packed_node(principled, MOS_LAYOUT)
+
+
+def _existing_orm_node(principled):
+    return _existing_packed_node(principled, ORM_LAYOUT)
+
+
+def _link_ao_sampler(node_tree, image, uv_node, location, ao_socket, layout, sampler=None):
+    """Feed the packed AO channel into the AO multiply through a second sampler, so AO reads UV1 while the other channels use the default UV map."""
     links = node_tree.links
     if sampler is None:
         sampler = node_tree.nodes.new("ShaderNodeTexImage")
         sampler.image = image
-        sampler.label = "MOS (AO)"
+        sampler.label = f"{layout['name']} (AO)"
         sampler.location = location
     if uv_node is not None:
         links.new(uv_node.outputs["UV"], sampler.inputs["Vector"])
@@ -66,15 +82,15 @@ def _link_ao_sampler(node_tree, image, uv_node, location, ao_socket, sampler=Non
     if separate is None:
         separate = node_tree.nodes.new("ShaderNodeSeparateColor")
         separate.mode = "RGB"
-        separate.label = "MOS AO Channel"
+        separate.label = f"{layout['name']} AO Channel"
         separate.location = (sampler.location.x + 280, sampler.location.y)
         links.new(sampler.outputs["Color"], separate.inputs["Color"])
-    links.new(separate.outputs["Green"], ao_socket)
+    links.new(separate.outputs[_OUTPUTS[layout["ao"]]], ao_socket)
 
 
-def _add_ao_to_mos(node_tree, mos_node, ao_node, ao_socket):
-    """Write a newly baked AO texture into the green channel of an existing MOS image and rewire the AO sampler."""
-    image = mos_node.image
+def _add_ao_to_packed(node_tree, packed_node, ao_node, ao_socket, layout):
+    """Write a newly baked AO texture into the AO channel of an existing packed image and rewire the AO sampler."""
+    image = packed_node.image
     width = max(image.size[0], ao_node.image.size[0])
     height = max(image.size[1], ao_node.image.size[1])
     pixels = image_to_array(image)
@@ -82,16 +98,115 @@ def _add_ao_to_mos(node_tree, mos_node, ao_node, ao_socket):
         method = resolve_resample_method("AUTO", max(width / image.size[0], height / image.size[1]))
         pixels = resample_pixels(pixels, width, height, method)
         image.scale(width, height)
-    pixels[..., 1] = _channel(ao_node.image, width, height)
+    pixels[..., layout["ao"]] = _channel(ao_node.image, width, height)
     image.pixels.foreach_set(np.asarray(pixels, dtype=np.float32).ravel())
     image.pack()
 
     uv_node = ao_node.inputs["Vector"].links[0].from_node if ao_node.inputs["Vector"].links else None
     location = ao_node.location.copy()
-    sampler = next((node for node in node_tree.nodes if node.type == "TEX_IMAGE" and node.image == image and node != mos_node), None)
+    sampler = next((node for node in node_tree.nodes if node.type == "TEX_IMAGE" and node.image == image and node != packed_node), None)
     node_tree.nodes.remove(ao_node)
-    _link_ao_sampler(node_tree, image, uv_node, location, ao_socket, sampler)
+    _link_ao_sampler(node_tree, image, uv_node, location, ao_socket, layout, sampler)
     return width, height
+
+
+def _pack(operator, context, layout):
+    name = layout["name"]
+    obj = context.active_object
+    material = obj.active_material if obj else None
+    if material is None or not material.use_nodes:
+        operator.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+        return {"CANCELLED"}
+    node_tree = material.node_tree
+    principled = next((node for node in node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
+    if principled is None:
+        operator.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
+        return {"CANCELLED"}
+
+    other_layout, other_unpack = (ORM_LAYOUT, bpy.ops.atlasmap.unpack_orm) if layout is MOS_LAYOUT else (MOS_LAYOUT, bpy.ops.atlasmap.unpack_mos)
+    if _existing_packed_node(principled, other_layout) is not None and "FINISHED" not in other_unpack():
+        operator.report({"ERROR"}, f"Could not unpack the {other_layout['name']} texture before packing {name}.")
+        return {"CANCELLED"}
+
+    sources = _detect_mos_sources(principled)
+    existing = _existing_packed_node(principled, layout)
+    if existing is not None:
+        if sources["ao"] is None:
+            operator.report({"INFO"}, f"{name} already packed; no new AO to add.")
+            return {"CANCELLED"}
+        empty = [image.name for image in (existing.image, sources["ao"].image) if 0 in image.size[:]]
+        if empty:
+            operator.report({"ERROR"}, f"Image(s) have no pixel data: {', '.join(empty)}.")
+            return {"CANCELLED"}
+        width, height = _add_ao_to_packed(node_tree, existing, sources["ao"], sources["ao_socket"], layout)
+        arrange_material_nodes(material)
+        operator.report({"INFO"}, f"Added AO to {existing.image.name} at {width}x{height}.")
+        return {"FINISHED"}
+    if sum(sources[key] is not None for key in ("metallic", "rs", "ao")) < 2:
+        operator.report({"INFO"}, "Nothing to pack; at least two of Metallic, Roughness/Smoothness and AO textures are needed.")
+        return {"CANCELLED"}
+    if sources["metallic"] is None or sources["rs"] is None:
+        scene = context.scene
+        previous_channel_pack = scene.atlasmap_channel_pack
+        try:
+            scene.atlasmap_channel_pack = False
+            result = bpy.ops.atlasmap.convert_shader_to_textures()
+        finally:
+            scene.atlasmap_channel_pack = previous_channel_pack
+        sources = _detect_mos_sources(principled)
+        if "FINISHED" not in result or sources["metallic"] is None or sources["rs"] is None:
+            operator.report({"ERROR"}, "Could not generate the missing Metallic or Roughness/Smoothness texture.")
+            return {"CANCELLED"}
+
+    texture_nodes = [sources[key] for key in ("metallic", "rs", "ao") if sources[key] is not None]
+    empty = [node.image.name for node in texture_nodes if 0 in node.image.size[:]]
+    if empty:
+        operator.report({"ERROR"}, f"Image(s) have no pixel data: {', '.join(empty)}.")
+        return {"CANCELLED"}
+    # ORM always stores roughness, so a smoothness source is inverted and its Invert node dropped.
+    to_roughness = layout is ORM_LAYOUT and sources["invert"] is not None
+    width = max(node.image.size[0] for node in texture_nodes)
+    height = max(node.image.size[1] for node in texture_nodes)
+    pixels = np.ones((height, width, 4), dtype=np.float32)
+    pixels[..., layout["metallic"]] = _channel(sources["metallic"].image, width, height)
+    rough = _channel(sources["rs"].image, width, height)
+    pixels[..., layout["rough"]] = 1.0 - rough if to_roughness else rough
+    if sources["ao"] is not None:
+        pixels[..., layout["ao"]] = _channel(sources["ao"].image, width, height)
+    image = create_packed_image(f"{material.name}_{name}", pixels, "Non-Color")
+
+    links = node_tree.links
+    metallic_location = sources["metallic"].location.copy()
+    ao_node = sources["ao"]
+    ao_location = ao_node.location.copy() if ao_node else None
+    uv_node = ao_node.inputs["Vector"].links[0].from_node if ao_node and ao_node.inputs["Vector"].links else None
+    for node in texture_nodes:
+        node_tree.nodes.remove(node)
+    invert = sources["invert"]
+    if to_roughness:
+        node_tree.nodes.remove(invert)
+        invert = None
+
+    packed_node = node_tree.nodes.new("ShaderNodeTexImage")
+    packed_node.image = image
+    packed_node.label = name
+    packed_node.location = metallic_location
+    separate = node_tree.nodes.new("ShaderNodeSeparateColor")
+    separate.mode = "RGB"
+    separate.label = f"{name} Channels"
+    separate.location = (metallic_location.x + 280, metallic_location.y)
+    links.new(packed_node.outputs["Color"], separate.inputs["Color"])
+    links.new(separate.outputs[_OUTPUTS[layout["metallic"]]], principled.inputs["Metallic"])
+    links.new(separate.outputs[_OUTPUTS[layout["rough"]]], invert.inputs["Color"] if invert else principled.inputs["Roughness"])
+
+    if ao_node is not None:
+        _link_ao_sampler(node_tree, image, uv_node, ao_location, sources["ao_socket"], layout)
+
+    arrange_material_nodes(material)
+    channel_names = {"metallic": "Metallic", "rough": "Smoothness" if invert else "Roughness", "ao": "AO" if ao_node is not None else "AO defaulted to 1.0"}
+    channels_text = ", ".join(channel_names[key] for key in sorted(channel_names, key=lambda key: layout[key]))
+    operator.report({"INFO"}, f"Packed {image.name} at {width}x{height}: {channels_text}.")
+    return {"FINISHED"}
 
 
 class ATLASMAP_OT_pack_mos(bpy.types.Operator):
@@ -100,89 +215,16 @@ class ATLASMAP_OT_pack_mos(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        material = obj.active_material if obj else None
-        if material is None or not material.use_nodes:
-            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
-            return {"CANCELLED"}
-        node_tree = material.node_tree
-        principled = next((node for node in node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
-        if principled is None:
-            self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
-            return {"CANCELLED"}
+        return _pack(self, context, MOS_LAYOUT)
 
-        sources = _detect_mos_sources(principled)
-        existing_mos = _existing_mos_node(principled)
-        if existing_mos is not None:
-            if sources["ao"] is None:
-                self.report({"INFO"}, "MOS already packed; no new AO to add.")
-                return {"CANCELLED"}
-            empty = [image.name for image in (existing_mos.image, sources["ao"].image) if 0 in image.size[:]]
-            if empty:
-                self.report({"ERROR"}, f"Image(s) have no pixel data: {', '.join(empty)}.")
-                return {"CANCELLED"}
-            width, height = _add_ao_to_mos(node_tree, existing_mos, sources["ao"], sources["ao_socket"])
-            arrange_material_nodes(material)
-            self.report({"INFO"}, f"Added AO to {existing_mos.image.name} at {width}x{height}.")
-            return {"FINISHED"}
-        if sum(sources[key] is not None for key in ("metallic", "rs", "ao")) < 2:
-            self.report({"INFO"}, "Nothing to pack; at least two of Metallic, Roughness/Smoothness and AO textures are needed.")
-            return {"CANCELLED"}
-        if sources["metallic"] is None or sources["rs"] is None:
-            scene = context.scene
-            previous_channel_pack = scene.atlasmap_channel_pack
-            try:
-                scene.atlasmap_channel_pack = False
-                result = bpy.ops.atlasmap.convert_shader_to_textures()
-            finally:
-                scene.atlasmap_channel_pack = previous_channel_pack
-            sources = _detect_mos_sources(principled)
-            if "FINISHED" not in result or sources["metallic"] is None or sources["rs"] is None:
-                self.report({"ERROR"}, "Could not generate the missing Metallic or Roughness/Smoothness texture.")
-                return {"CANCELLED"}
 
-        texture_nodes = [sources[key] for key in ("metallic", "rs", "ao") if sources[key] is not None]
-        empty = [node.image.name for node in texture_nodes if 0 in node.image.size[:]]
-        if empty:
-            self.report({"ERROR"}, f"Image(s) have no pixel data: {', '.join(empty)}.")
-            return {"CANCELLED"}
-        width = max(node.image.size[0] for node in texture_nodes)
-        height = max(node.image.size[1] for node in texture_nodes)
-        pixels = np.ones((height, width, 4), dtype=np.float32)
-        pixels[..., 0] = _channel(sources["metallic"].image, width, height)
-        pixels[..., 2] = _channel(sources["rs"].image, width, height)
-        if sources["ao"] is not None:
-            pixels[..., 1] = _channel(sources["ao"].image, width, height)
-        image = create_packed_image(f"{material.name}_MOS", pixels, "Non-Color")
+class ATLASMAP_OT_pack_orm(bpy.types.Operator):
+    bl_idname = "atlasmap.pack_orm"
+    bl_label = "Pack ORM"
+    bl_options = {"REGISTER", "UNDO"}
 
-        links = node_tree.links
-        metallic_location = sources["metallic"].location.copy()
-        ao_node = sources["ao"]
-        ao_location = ao_node.location.copy() if ao_node else None
-        uv_node = ao_node.inputs["Vector"].links[0].from_node if ao_node and ao_node.inputs["Vector"].links else None
-        for node in texture_nodes:
-            node_tree.nodes.remove(node)
-
-        mos_node = node_tree.nodes.new("ShaderNodeTexImage")
-        mos_node.image = image
-        mos_node.label = "MOS"
-        mos_node.location = metallic_location
-        separate = node_tree.nodes.new("ShaderNodeSeparateColor")
-        separate.mode = "RGB"
-        separate.label = "MOS Channels"
-        separate.location = (metallic_location.x + 280, metallic_location.y)
-        links.new(mos_node.outputs["Color"], separate.inputs["Color"])
-        links.new(separate.outputs["Red"], principled.inputs["Metallic"])
-        links.new(separate.outputs["Blue"], sources["invert"].inputs["Color"] if sources["invert"] else principled.inputs["Roughness"])
-
-        if ao_node is not None:
-            _link_ao_sampler(node_tree, image, uv_node, ao_location, sources["ao_socket"])
-
-        arrange_material_nodes(material)
-        blue_name = "Smoothness" if sources["invert"] else "Roughness"
-        ao_text = "AO" if ao_node is not None else "AO defaulted to 1.0"
-        self.report({"INFO"}, f"Packed {image.name} at {width}x{height}: Metallic, {ao_text}, {blue_name}.")
-        return {"FINISHED"}
+    def execute(self, context):
+        return _pack(self, context, ORM_LAYOUT)
 
 
 def _ao_mix_socket(node_tree, principled):
@@ -220,67 +262,81 @@ def _texture_node(node_tree, image, label, location):
     return node
 
 
+def _unpack(operator, context, layout):
+    name = layout["name"]
+    obj = context.active_object
+    material = obj.active_material if obj else None
+    if material is None or not material.use_nodes:
+        operator.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+        return {"CANCELLED"}
+    node_tree = material.node_tree
+    principled = next((node for node in node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
+    if principled is None:
+        operator.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
+        return {"CANCELLED"}
+    packed_node = _existing_packed_node(principled, layout)
+    if packed_node is None:
+        operator.report({"INFO"}, f"No {name} texture to unpack.")
+        return {"CANCELLED"}
+    packed_image = packed_node.image
+    if 0 in packed_image.size[:]:
+        operator.report({"ERROR"}, f"Image has no pixel data: {packed_image.name}.")
+        return {"CANCELLED"}
+
+    separate = principled.inputs["Metallic"].links[0].from_node
+    roughness_input = principled.inputs["Roughness"]
+    invert = roughness_input.links[0].from_node if roughness_input.links else None
+    if invert is None or invert.type != "INVERT" or not any(link.from_node == separate for link in invert.inputs["Color"].links):
+        invert = None
+    ao_sampler = next((node for node in node_tree.nodes if node.type == "TEX_IMAGE" and node.image == packed_image and node != packed_node), None)
+    ao_separate = next((link.to_node for link in ao_sampler.outputs["Color"].links if link.to_node.type == "SEPARATE_COLOR"), None) if ao_sampler else None
+    ao_socket = next((link.to_socket for link in ao_separate.outputs[_OUTPUTS[layout["ao"]]].links), None) if ao_separate else None
+    uv_node = ao_sampler.inputs["Vector"].links[0].from_node if ao_sampler and ao_sampler.inputs["Vector"].links else None
+    if ao_socket is None:
+        ao_socket = _ao_mix_socket(node_tree, principled)
+        uv_node = None
+
+    pixels = image_to_array(packed_image)
+    rough_name, rough_suffix = ("Smoothness", "_S") if invert else ("Roughness", "_R")
+    metallic_image = _channel_image(f"{material.name}_M", pixels, layout["metallic"])
+    ao_image = _channel_image(f"{material.name}_AO", pixels, layout["ao"])
+    rough_image = _channel_image(f"{material.name}{rough_suffix}", pixels, layout["rough"])
+
+    links = node_tree.links
+    location = packed_node.location.copy()
+    metallic_node = _texture_node(node_tree, metallic_image, "Metallic", location)
+    rough_node = _texture_node(node_tree, rough_image, rough_name, location)
+    ao_node = _texture_node(node_tree, ao_image, "Ambient Occlusion", ao_sampler.location.copy() if ao_sampler else location)
+    links.new(metallic_node.outputs["Color"], principled.inputs["Metallic"])
+    links.new(rough_node.outputs["Color"], invert.inputs["Color"] if invert else roughness_input)
+    links.new(ao_node.outputs["Color"], ao_socket)
+    if uv_node is not None:
+        links.new(uv_node.outputs["UV"], ao_node.inputs["Vector"])
+    for node in (packed_node, separate, ao_sampler, ao_separate):
+        if node is not None:
+            node_tree.nodes.remove(node)
+
+    arrange_material_nodes(material)
+    operator.report({"INFO"}, f"Unpacked {packed_image.name} into {metallic_image.name}, {ao_image.name}, {rough_image.name}.")
+    return {"FINISHED"}
+
+
 class ATLASMAP_OT_unpack_mos(bpy.types.Operator):
     bl_idname = "atlasmap.unpack_mos"
     bl_label = "Unpack MOS"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        material = obj.active_material if obj else None
-        if material is None or not material.use_nodes:
-            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
-            return {"CANCELLED"}
-        node_tree = material.node_tree
-        principled = next((node for node in node_tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
-        if principled is None:
-            self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
-            return {"CANCELLED"}
-        mos_node = _existing_mos_node(principled)
-        if mos_node is None:
-            self.report({"INFO"}, "No MOS texture to unpack.")
-            return {"CANCELLED"}
-        mos_image = mos_node.image
-        if 0 in mos_image.size[:]:
-            self.report({"ERROR"}, f"Image has no pixel data: {mos_image.name}.")
-            return {"CANCELLED"}
+        return _unpack(self, context, MOS_LAYOUT)
 
-        separate = principled.inputs["Metallic"].links[0].from_node
-        roughness_input = principled.inputs["Roughness"]
-        invert = roughness_input.links[0].from_node if roughness_input.links else None
-        if invert is None or invert.type != "INVERT" or not any(link.from_node == separate for link in invert.inputs["Color"].links):
-            invert = None
-        ao_sampler = next((node for node in node_tree.nodes if node.type == "TEX_IMAGE" and node.image == mos_image and node != mos_node), None)
-        ao_separate = next((link.to_node for link in ao_sampler.outputs["Color"].links if link.to_node.type == "SEPARATE_COLOR"), None) if ao_sampler else None
-        ao_socket = next((link.to_socket for link in ao_separate.outputs["Green"].links), None) if ao_separate else None
-        uv_node = ao_sampler.inputs["Vector"].links[0].from_node if ao_sampler and ao_sampler.inputs["Vector"].links else None
-        if ao_socket is None:
-            ao_socket = _ao_mix_socket(node_tree, principled)
-            uv_node = None
 
-        pixels = image_to_array(mos_image)
-        blue_name, blue_suffix = ("Smoothness", "_S") if invert else ("Roughness", "_R")
-        metallic_image = _channel_image(f"{material.name}_M", pixels, 0)
-        ao_image = _channel_image(f"{material.name}_AO", pixels, 1)
-        blue_image = _channel_image(f"{material.name}{blue_suffix}", pixels, 2)
+class ATLASMAP_OT_unpack_orm(bpy.types.Operator):
+    bl_idname = "atlasmap.unpack_orm"
+    bl_label = "Unpack ORM"
+    bl_options = {"REGISTER", "UNDO"}
 
-        links = node_tree.links
-        location = mos_node.location.copy()
-        metallic_node = _texture_node(node_tree, metallic_image, "Metallic", location)
-        blue_node = _texture_node(node_tree, blue_image, blue_name, location)
-        ao_node = _texture_node(node_tree, ao_image, "Ambient Occlusion", ao_sampler.location.copy() if ao_sampler else location)
-        links.new(metallic_node.outputs["Color"], principled.inputs["Metallic"])
-        links.new(blue_node.outputs["Color"], invert.inputs["Color"] if invert else roughness_input)
-        links.new(ao_node.outputs["Color"], ao_socket)
-        if uv_node is not None:
-            links.new(uv_node.outputs["UV"], ao_node.inputs["Vector"])
-        for node in (mos_node, separate, ao_sampler, ao_separate):
-            if node is not None:
-                node_tree.nodes.remove(node)
-
-        arrange_material_nodes(material)
-        self.report({"INFO"}, f"Unpacked {mos_image.name} into {metallic_image.name}, {ao_image.name}, {blue_image.name}.")
-        return {"FINISHED"}
+    def execute(self, context):
+        return _unpack(self, context, ORM_LAYOUT)
 
 
 class ATLASMAP_OT_switch_smoothness_roughness(bpy.types.Operator):

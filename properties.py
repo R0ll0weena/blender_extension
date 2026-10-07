@@ -106,7 +106,7 @@ def register_properties():
         name="Texture Size", description="Bake image width and height", default=1024, min=16, max=16384,
     )
     bpy.types.Scene.atlasmap_ao_reunwrap_uv1 = bpy.props.BoolProperty(
-        name="Re-unwrap UV1", description="Run Smart UV Project on the second UV layer before each AO bake", default=True,
+        name="Unwrap UV1", description="Run Smart UV Project on the second UV layer before each AO bake", default=True,
     )
     bpy.types.Scene.atlasmap_ao_cycles_samples = bpy.props.IntProperty(
         name="Cycles Samples", description="Cycles samples used for the bake", default=64, min=1, max=65536,
