@@ -104,17 +104,19 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
             if metallic_input.is_linked:
                 skipped_maps.append("Metallic")
             if roughness_input.is_linked:
-                skipped_maps.append("Smoothness" if smoothness_enabled else "Roughness")
+                skipped_maps.append("Smoothness")
             if not metallic_input.is_linked or not roughness_input.is_linked:
+                # MOS follows the Unity URP mask layout: smoothness in alpha, blue unused.
                 metallic_value = metallic_input.default_value
-                packed_blue = 1.0 - roughness_input.default_value if smoothness_enabled else roughness_input.default_value
+                smoothness = 1.0 - roughness_input.default_value
                 image = bpy.data.images.new(f"{material.name}_MOS", width=texture_size, height=texture_size, alpha=True, float_buffer=True)
                 image.colorspace_settings.name = "Non-Color"
-                image.pixels.foreach_set((metallic_value, 0.0, packed_blue, 1.0) * (texture_size * texture_size))
+                image.alpha_mode = "CHANNEL_PACKED"
+                image.pixels.foreach_set((metallic_value, 0.0, 0.0, smoothness) * (texture_size * texture_size))
                 image.pack()
                 texture_node = node_tree.nodes.new("ShaderNodeTexImage")
                 texture_node.image = image
-                texture_node.label = "Metallic / Smoothness" if smoothness_enabled else "Metallic / Roughness"
+                texture_node.label = "Metallic / Smoothness"
                 texture_node.location = (principled.location.x - 560, principled.location.y - len(values) * 360)
                 separate = node_tree.nodes.new("ShaderNodeSeparateColor")
                 separate.mode = "RGB"
@@ -123,16 +125,13 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
                 node_tree.links.new(texture_node.outputs["Color"], separate.inputs["Color"])
                 if not metallic_input.is_linked:
                     node_tree.links.new(separate.outputs["Red"], metallic_input)
-                if smoothness_enabled:
-                    invert_node = node_tree.nodes.new("ShaderNodeInvert")
-                    invert_node.label = "Smoothness Invert"
-                    invert_node.inputs["Fac"].default_value = 1.0
-                    invert_node.location = (principled.location.x - 280, texture_node.location.y - 360)
-                    node_tree.links.new(separate.outputs["Blue"], invert_node.inputs["Color"])
-                    if not roughness_input.is_linked:
-                        node_tree.links.new(invert_node.outputs["Color"], roughness_input)
-                elif not roughness_input.is_linked:
-                    node_tree.links.new(separate.outputs["Blue"], roughness_input)
+                invert_node = node_tree.nodes.new("ShaderNodeInvert")
+                invert_node.label = "Smoothness Invert"
+                invert_node.inputs["Fac"].default_value = 1.0
+                invert_node.location = (principled.location.x - 280, texture_node.location.y - 360)
+                node_tree.links.new(texture_node.outputs["Alpha"], invert_node.inputs["Color"])
+                if not roughness_input.is_linked:
+                    node_tree.links.new(invert_node.outputs["Color"], roughness_input)
                 created_maps.append("MOS")
                 mos_created = True
 
@@ -140,7 +139,7 @@ class ATLASMAP_OT_convert_shader_to_textures(bpy.types.Operator):
         if normal_input.is_linked:
             skipped_maps.append("Normal")
         else:
-            normal_row = len(values) + (2 if mos_created and smoothness_enabled else int(mos_created))
+            normal_row = len(values) + (2 if mos_created else 0)
             image = bpy.data.images.new(f"{material.name}_N", width=texture_size, height=texture_size, alpha=True, float_buffer=True)
             image.colorspace_settings.name = "Non-Color"
             image.pixels.foreach_set((0.5, 0.5, 1.0, 1.0) * (texture_size * texture_size))

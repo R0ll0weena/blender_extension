@@ -6,7 +6,7 @@ from ..operators.ambient_occlusion import ATLASMAP_OT_bake_ambient_occlusion
 from ..operators.atlasmap import ATLASMAP_OT_combine_materials, ATLASMAP_OT_combine_shared_materials
 from ..operators.color_mapper import ATLASMAP_OT_atlas_to_simple_materials
 from ..operators.convert_textures import ATLASMAP_OT_convert_shader_to_textures
-from ..operators.resample import ATLASMAP_OT_export_textures, ATLASMAP_OT_resample_selected_texture, selected_texture_images
+from ..operators.resample import ATLASMAP_OT_export_textures, ATLASMAP_OT_invert_texture, ATLASMAP_OT_resample_selected_texture, selected_texture_images
 from ..operators.texture_channels import ATLASMAP_OT_pack_mos, ATLASMAP_OT_pack_orm, ATLASMAP_OT_switch_smoothness_roughness, ATLASMAP_OT_unpack_mos, ATLASMAP_OT_unpack_orm
 from ..operators.unwrap import ATLASMAP_OT_smart_unwrap_uv1
 
@@ -67,6 +67,7 @@ class ATLASMAP_PT_normalize_textures(bpy.types.Panel):
         else:
             count = len(selected_texture_images(context.scene, material))
             layout.operator(ATLASMAP_OT_resample_selected_texture.bl_idname, text=f"Resample Textures ({count})", icon="IMAGE")
+        layout.operator(ATLASMAP_OT_invert_texture.bl_idname, icon="MOD_MASK")
         layout.operator(ATLASMAP_OT_export_textures.bl_idname, icon="EXPORT")
 
 

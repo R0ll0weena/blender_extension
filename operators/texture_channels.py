@@ -45,9 +45,15 @@ def _channel(image, width, height):
     return pixels[..., 0]
 
 
-MOS_LAYOUT = {"name": "MOS", "metallic": 0, "ao": 1, "rough": 2}
+# MOS follows the Unity URP mask layout: smoothness lives in alpha and blue is unused.
+MOS_LAYOUT = {"name": "MOS", "metallic": 0, "ao": 1, "rough": 3}
 ORM_LAYOUT = {"name": "ORM", "ao": 0, "rough": 1, "metallic": 2}
 _OUTPUTS = ("Red", "Green", "Blue")
+
+
+def _channel_output(packed_node, separate, index):
+    """The socket carrying channel index: the texture's Alpha output for 3, else the Separate Color output."""
+    return packed_node.outputs["Alpha"] if index == 3 else separate.outputs[_OUTPUTS[index]]
 
 
 def _existing_packed_node(principled, layout):
@@ -163,17 +169,23 @@ def _pack(operator, context, layout):
     if empty:
         operator.report({"ERROR"}, f"Image(s) have no pixel data: {', '.join(empty)}.")
         return {"CANCELLED"}
-    # ORM always stores roughness, so a smoothness source is inverted and its Invert node dropped.
+    # ORM always stores roughness and MOS always stores smoothness, so a mismatched source is inverted
+    # and its Invert node dropped (ORM) or added (MOS).
     to_roughness = layout is ORM_LAYOUT and sources["invert"] is not None
+    to_smoothness = layout is MOS_LAYOUT and sources["invert"] is None
     width = max(node.image.size[0] for node in texture_nodes)
     height = max(node.image.size[1] for node in texture_nodes)
     pixels = np.ones((height, width, 4), dtype=np.float32)
+    if layout is MOS_LAYOUT:
+        pixels[..., 2] = 0.0
     pixels[..., layout["metallic"]] = _channel(sources["metallic"].image, width, height)
     rough = _channel(sources["rs"].image, width, height)
-    pixels[..., layout["rough"]] = 1.0 - rough if to_roughness else rough
+    pixels[..., layout["rough"]] = 1.0 - rough if to_roughness or to_smoothness else rough
     if sources["ao"] is not None:
         pixels[..., layout["ao"]] = _channel(sources["ao"].image, width, height)
     image = create_packed_image(f"{material.name}_{name}", pixels, "Non-Color")
+    if layout is MOS_LAYOUT:
+        image.alpha_mode = "CHANNEL_PACKED"
 
     links = node_tree.links
     metallic_location = sources["metallic"].location.copy()
@@ -186,6 +198,11 @@ def _pack(operator, context, layout):
     if to_roughness:
         node_tree.nodes.remove(invert)
         invert = None
+    elif to_smoothness:
+        invert = node_tree.nodes.new("ShaderNodeInvert")
+        invert.label = "Smoothness Invert"
+        invert.inputs["Fac"].default_value = 1.0
+        links.new(invert.outputs["Color"], principled.inputs["Roughness"])
 
     packed_node = node_tree.nodes.new("ShaderNodeTexImage")
     packed_node.image = image
@@ -197,7 +214,7 @@ def _pack(operator, context, layout):
     separate.location = (metallic_location.x + 280, metallic_location.y)
     links.new(packed_node.outputs["Color"], separate.inputs["Color"])
     links.new(separate.outputs[_OUTPUTS[layout["metallic"]]], principled.inputs["Metallic"])
-    links.new(separate.outputs[_OUTPUTS[layout["rough"]]], invert.inputs["Color"] if invert else principled.inputs["Roughness"])
+    links.new(_channel_output(packed_node, separate, layout["rough"]), invert.inputs["Color"] if invert else principled.inputs["Roughness"])
 
     if ao_node is not None:
         _link_ao_sampler(node_tree, image, uv_node, ao_location, sources["ao_socket"], layout)
@@ -286,7 +303,8 @@ def _unpack(operator, context, layout):
     separate = principled.inputs["Metallic"].links[0].from_node
     roughness_input = principled.inputs["Roughness"]
     invert = roughness_input.links[0].from_node if roughness_input.links else None
-    if invert is None or invert.type != "INVERT" or not any(link.from_node == separate for link in invert.inputs["Color"].links):
+    rough_source = packed_node if layout["rough"] == 3 else separate
+    if invert is None or invert.type != "INVERT" or not any(link.from_node == rough_source for link in invert.inputs["Color"].links):
         invert = None
     ao_sampler = next((node for node in node_tree.nodes if node.type == "TEX_IMAGE" and node.image == packed_image and node != packed_node), None)
     ao_separate = next((link.to_node for link in ao_sampler.outputs["Color"].links if link.to_node.type == "SEPARATE_COLOR"), None) if ao_sampler else None
@@ -356,7 +374,7 @@ class ATLASMAP_OT_switch_smoothness_roughness(bpy.types.Operator):
             self.report({"ERROR"}, "No Principled BSDF node was found in the active material.")
             return {"CANCELLED"}
 
-        # Smoothness is TEX_IMAGE/MOS blue -> Invert -> Roughness; roughness is linked directly.
+        # Smoothness is TEX_IMAGE/MOS alpha -> Invert -> Roughness; roughness is linked directly.
         roughness_input = principled.inputs["Roughness"]
         link = roughness_input.links[0] if roughness_input.links else None
         invert = link.from_node if link and link.from_node.type == "INVERT" else None
@@ -365,11 +383,11 @@ class ATLASMAP_OT_switch_smoothness_roughness(bpy.types.Operator):
         else:
             source_socket = link.from_socket if link else None
         source = source_socket.node if source_socket else None
-        mos_node = _direct_texture(source.inputs["Color"]) if source and source.type == "SEPARATE_COLOR" and source_socket.name == "Blue" else None
-        if source is not None and source.type == "TEX_IMAGE" and source.image is not None:
+        mos_node = source if source and source.type == "TEX_IMAGE" and source.image is not None and source_socket.name == "Alpha" else None
+        if mos_node is not None:
+            image, channels = mos_node.image, slice(3, 4)
+        elif source is not None and source.type == "TEX_IMAGE" and source.image is not None:
             image, channels = source.image, slice(0, 3)
-        elif mos_node is not None:
-            image, channels = mos_node.image, slice(2, 3)
         else:
             self.report({"INFO"}, "No Roughness/Smoothness texture found.")
             return {"CANCELLED"}

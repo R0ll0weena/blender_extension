@@ -72,7 +72,7 @@ def register_properties():
         default=False,
     )
     bpy.types.Scene.atlasmap_channel_pack = bpy.props.BoolProperty(
-        name="Channel Pack", description="Pack metallic into red and roughness or smoothness into blue of a single MOS texture",
+        name="Channel Pack", description="Pack metallic into red and smoothness into alpha of a single MOS texture",
         default=False,
     )
     bpy.types.Scene.atlasmap_uv_angle_limit = bpy.props.FloatProperty(

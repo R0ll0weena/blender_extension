@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import bpy
+import numpy as np
 
 from ..utils.resampling import (
     WORKER_COUNT, ResampleCancelled, read_image_pixels, resample_image, resample_pixels_parallel,
@@ -140,6 +141,40 @@ class ATLASMAP_OT_resample_selected_texture(bpy.types.Operator):
         wm.atlasmap_progress_text = ""
         wm.atlasmap_progress_task = ""
         _redraw(context)
+
+
+class ATLASMAP_OT_invert_texture(bpy.types.Operator):
+    bl_idname = "atlasmap.invert_texture"
+    bl_label = "Invert Texture"
+    bl_description = "Invert the colors of the checked textures, or the selected one when none are checked"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        material = obj.active_material if obj else None
+        if material is None or not material.use_nodes:
+            self.report({"ERROR"}, "The active object needs a material with nodes enabled.")
+            return {"CANCELLED"}
+        images = selected_texture_images(context.scene, material)
+        if not images:
+            self.report({"ERROR"}, "Check or select an image texture in the list first.")
+            return {"CANCELLED"}
+        unloaded = [image.name for image in images if image.source != "GENERATED" and not image.has_data]
+        if unloaded:
+            self.report({"ERROR"}, f"Texture image(s) have no pixel data loaded: {', '.join(unloaded)}.")
+            return {"CANCELLED"}
+        for image in images:
+            width, height = image.size[:]
+            pixels = np.empty(width * height * 4, dtype=np.float32)
+            image.pixels.foreach_get(pixels)
+            rgb = pixels.reshape(-1, 4)[:, :3]
+            # In place, so no temporaries; alpha is left untouched.
+            np.subtract(1.0, rgb, out=rgb)
+            image.pixels.foreach_set(pixels)
+            if image.packed_file is not None:
+                image.pack()
+        self.report({"INFO"}, f"Inverted {len(images)} texture(s).")
+        return {"FINISHED"}
 
 
 EXPORT_EXTENSIONS = {
